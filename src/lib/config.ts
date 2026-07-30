@@ -13,8 +13,17 @@ const envSchema = z.object({
   AUTH0_ISSUER: z.string().url().optional(),
   AUTH0_CLIENT_ID: z.string().optional(),
   AUTH0_CLIENT_SECRET: z.string().optional(),
+  /** Cookie encryption secret for @auth0/nextjs-auth0 (openssl rand -hex 32). */
+  AUTH0_SECRET: z.string().min(32).optional(),
   SESSION_SECRET: z.string().min(32).optional(),
   AUTH0_M2M_CLIENT_ORG_MAP: z.string().optional(),
+  /**
+   * Fallback human permissions when the access token has no RBAC `permissions`
+   * claim (comma-separated). Prefer Auth0 API Authorization + org roles in prod.
+   */
+  AUTH0_DEFAULT_HUMAN_PERMISSIONS: z
+    .string()
+    .default("mandates:write,approvals:read,approvals:decide,orders:read"),
   STRIPE_SECRET_KEY: z.string().optional(),
   STRIPE_WEBHOOK_SECRET: z.string().optional(),
   STRIPE_DEFAULT_PAYMENT_METHOD: z.string().default("pm_card_visa"),

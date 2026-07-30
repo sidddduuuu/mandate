@@ -37,4 +37,14 @@ npm run dev
 | `GET` | `/api/audit` | Human session |
 | `POST` | `/api/webhooks/stripe` | Stripe signature |
 
-Set `AUTH_TEST_MODE=1` for local HS256 agent tokens (`mintTestAgentToken`) and signed `mandate_session` cookies.
+### Auth0 (human Organizations session)
+
+This repo uses the official Auth0 agent skill (`.agents/skills/auth0`) and
+`@auth0/nextjs-auth0` v4 for human approvers:
+
+1. Configure `AUTH0_DOMAIN`, `AUTH0_CLIENT_ID`, `AUTH0_CLIENT_SECRET`, `AUTH0_SECRET`, `APP_BASE_URL`.
+2. In the Auth0 app, allow `http://localhost:3000/auth/callback` and enable Organizations.
+3. Open `/auth/login?organization=org_…` (home page links the seeded buyer org).
+4. Call `GET /api/session` — Mandate maps the Auth0 `org_id` + permissions into the human actor used by approvals/mandates.
+
+Agent M2M stays on bearer JWTs (`AUTH0_AUDIENCE` + JWKS). Set `AUTH_TEST_MODE=1` only for local HS256 agent tokens and the test `mandate_session` cookie.

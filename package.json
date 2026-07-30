@@ -15,6 +15,7 @@
     "demo": "tsx scripts/demo.ts"
   },
   "dependencies": {
+    "@auth0/nextjs-auth0": "^4.26.0",
     "better-sqlite3": "^11.9.1",
     "jose": "^6.0.10",
     "next": "^15.3.1",

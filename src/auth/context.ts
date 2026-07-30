@@ -1,6 +1,8 @@
-import { createRemoteJWKSet, jwtVerify, SignJWT } from "jose";
+import { createRemoteJWKSet, decodeJwt, jwtVerify, SignJWT } from "jose";
 import { createHmac, timingSafeEqual } from "crypto";
+import type { NextRequest } from "next/server";
 import type { Db } from "../db";
+import { getAuth0Client } from "../lib/auth0";
 import { getConfig } from "../lib/config";
 import { AppError } from "../lib/http";
 import { writeAudit } from "../audit/audit";
@@ -162,6 +164,81 @@ export function encodeSessionCookie(payload: {
   return `${body}.${sig}`;
 }
 
+function defaultHumanPermissions(): Set<string> {
+  const raw = getConfig().AUTH0_DEFAULT_HUMAN_PERMISSIONS;
+  return new Set(
+    raw
+      .split(",")
+      .map((p) => p.trim())
+      .filter((p) => HUMAN_PERMISSIONS.has(p)),
+  );
+}
+
+function permissionsFromAccessToken(accessToken: string | undefined): Set<string> {
+  if (!accessToken) return new Set();
+  try {
+    const claims = decodeJwt(accessToken) as Record<string, unknown>;
+    const fromArray = Array.isArray(claims.permissions)
+      ? claims.permissions.filter((p): p is string => typeof p === "string")
+      : [];
+    const fromScope =
+      typeof claims.scope === "string"
+        ? claims.scope.split(/\s+/).filter((s) => HUMAN_PERMISSIONS.has(s))
+        : [];
+    const merged = [...fromArray, ...fromScope].filter((p) => HUMAN_PERMISSIONS.has(p));
+    return new Set(merged);
+  } catch {
+    return new Set();
+  }
+}
+
+/**
+ * Resolve a human ActorContext from an Auth0 Organization login session.
+ * Requires org_id on the user/access token (login via /auth/login?organization=org_…).
+ */
+export async function actorFromAuth0Session(
+  db: Db,
+  request: Request,
+): Promise<ActorContext | null> {
+  const auth0 = getAuth0Client();
+  if (!auth0) return null;
+
+  const session = await auth0.getSession(request as NextRequest);
+  if (!session?.user?.sub) return null;
+
+  let auth0OrgId =
+    typeof session.user.org_id === "string" ? session.user.org_id : "";
+  if (!auth0OrgId && session.tokenSet?.accessToken) {
+    try {
+      const claims = decodeJwt(session.tokenSet.accessToken) as Record<string, unknown>;
+      if (typeof claims.org_id === "string") auth0OrgId = claims.org_id;
+    } catch {
+      // ignore
+    }
+  }
+  if (!auth0OrgId) {
+    throw new AppError(
+      403,
+      "missing_organization",
+      "Auth0 session has no organization; login with ?organization=org_…",
+    );
+  }
+
+  const org = lookupOrgByAuth0Id(db, auth0OrgId);
+  const tokenPermissions = permissionsFromAccessToken(session.tokenSet?.accessToken);
+  const permissions =
+    tokenPermissions.size > 0 ? tokenPermissions : defaultHumanPermissions();
+
+  return {
+    actorType: "human",
+    subject: session.user.sub,
+    organizationId: org.id,
+    auth0OrgId: org.auth0_org_id,
+    scopes: new Set(),
+    permissions,
+  };
+}
+
 export async function authenticateRequest(
   db: Db,
   request: Request,
@@ -208,6 +285,15 @@ export async function authenticateRequest(
         permissions: new Set(),
         clientId,
       };
+    }
+
+    const fromAuth0 = await actorFromAuth0Session(db, request);
+    if (fromAuth0) return fromAuth0;
+
+    // AUTH_TEST_MODE only: signed mandate_session cookie for automated tests.
+    const cfg = getConfig();
+    if (!cfg.AUTH_TEST_MODE) {
+      throw new AppError(401, "unauthorized", "Authentication required");
     }
 
     const session = decodeSessionCookie(request.headers.get("cookie"));
