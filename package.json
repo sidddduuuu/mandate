@@ -1,0 +1,37 @@
+{
+  "name": "mandate",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
+    "test": "node --import tsx --test test/**/*.test.ts",
+    "db:init": "tsx scripts/init-db.ts",
+    "seed": "tsx scripts/seed.ts",
+    "reconcile": "tsx scripts/reconcile.ts",
+    "demo": "tsx scripts/demo.ts"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.9.1",
+    "jose": "^6.0.10",
+    "next": "^15.3.1",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "stripe": "^18.0.0",
+    "zod": "^3.24.3"
+  },
+  "devDependencies": {
+    "@eslint/eslintrc": "^3.3.6",
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^22.14.1",
+    "@types/react": "^19.1.2",
+    "@types/react-dom": "^19.1.2",
+    "eslint": "^9.24.0",
+    "eslint-config-next": "^15.3.1",
+    "tsx": "^4.19.3",
+    "typescript": "^5.8.3"
+  }
+}
