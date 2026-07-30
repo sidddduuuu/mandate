@@ -1,2 +1,6 @@
-# mandate
-Auth0 &amp; Stripe Hackathon
+# Mandate
+
+Governed commerce for AI agents.
+
+- [Product mandate](MANDATE.md)
+- [MVP architecture](ARCHITECTURE.md)
