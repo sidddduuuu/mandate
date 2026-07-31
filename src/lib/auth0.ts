@@ -26,16 +26,26 @@ export function getAuth0Client(): Auth0Client | null {
     return client;
   }
 
+  // Human Universal Login only needs OIDC scopes. Do not send AUTH0_AUDIENCE
+  // unless that API exists in the tenant — a missing API causes
+  // "An error occurred during the authorization flow."
+  const authorizationParameters: {
+    scope: string;
+    audience?: string;
+  } = {
+    scope: "openid profile email",
+  };
+  if (process.env.AUTH0_INCLUDE_AUDIENCE_IN_LOGIN === "1" && cfg.AUTH0_AUDIENCE) {
+    authorizationParameters.audience = cfg.AUTH0_AUDIENCE;
+  }
+
   client = new Auth0Client({
     domain: cfg.AUTH0_DOMAIN,
     clientId: cfg.AUTH0_CLIENT_ID,
     clientSecret: cfg.AUTH0_CLIENT_SECRET,
     secret: cfg.AUTH0_SECRET,
     appBaseUrl: cfg.APP_BASE_URL,
-    authorizationParameters: {
-      scope: "openid profile email",
-      audience: cfg.AUTH0_AUDIENCE,
-    },
+    authorizationParameters,
     session: {
       rolling: true,
       inactivityDuration: 24 * 60 * 60,
