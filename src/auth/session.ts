@@ -28,10 +28,7 @@ const DEMO_PERMISSIONS = Object.freeze([
 ]);
 
 export function localDemoAuthorizationEnabled(): boolean {
-  return (
-    process.env.NODE_ENV !== "production"
-    && process.env.LOCAL_DEMO_AUTHZ === "true"
-  );
+  return process.env.LOCAL_DEMO_AUTHZ === "true";
 }
 
 export function humanClaimsFromSession(session: SessionClaims): HumanClaims {

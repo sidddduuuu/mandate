@@ -26,16 +26,18 @@
   "resources": {
     "auth0": {
       "configuration": {
-        "name": "Mandate Local Demo",
+        "name": "Mandate Demo",
         "callbacks": [
-          "http://localhost:3000/auth/callback"
+          "http://localhost:3000/auth/callback",
+          "https://mandate-gamma.vercel.app/auth/callback"
         ],
         "allowed_logout_urls": [
-          "http://localhost:3000"
+          "http://localhost:3000",
+          "https://mandate-gamma.vercel.app"
         ]
       },
       "createdAt": "2026-07-31T00:44:41.167Z",
-      "lastRevealedAt": "2026-07-31T00:53:02.762Z",
+      "lastRevealedAt": "2026-07-31T03:52:16.804Z",
       "lastStatus": "complete",
       "name": "auth0",
       "providerId": "prvdr_61UVctyxfLOj4FpVw5Bmi",

@@ -135,7 +135,7 @@ async function identity() {
 export const loadDashboardSnapshot = cache(async (): Promise<DashboardSnapshot> => {
   const { actor, displayName } = await identity();
   return withDatabase(async (database) => {
-    if (process.env.NODE_ENV === "development") {
+    if (process.env.LOCAL_DEMO_AUTHZ === "true") {
       const catalog = await database.get(
         "SELECT count(*) AS count FROM catalog_items",
       );

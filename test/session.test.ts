@@ -72,7 +72,7 @@ test("rejects cross-origin human mutations before reading a session", async () =
   }
 });
 
-test("development demo keeps Auth0 identity and supplies local authorization", () => {
+test("demo mode keeps Auth0 identity and supplies local authorization", () => {
   const localDemoAuthz = process.env.LOCAL_DEMO_AUTHZ;
   process.env.LOCAL_DEMO_AUTHZ = "true";
   try {
@@ -94,6 +94,17 @@ test("development demo keeps Auth0 identity and supplies local authorization", (
         scope: "",
       },
     );
+  } finally {
+    if (localDemoAuthz === undefined) delete process.env.LOCAL_DEMO_AUTHZ;
+    else process.env.LOCAL_DEMO_AUTHZ = localDemoAuthz;
+  }
+});
+
+test("demo mode is disabled unless explicitly enabled", () => {
+  const localDemoAuthz = process.env.LOCAL_DEMO_AUTHZ;
+  delete process.env.LOCAL_DEMO_AUTHZ;
+  try {
+    assert.equal(localDemoAuthorizationEnabled(), false);
   } finally {
     if (localDemoAuthz === undefined) delete process.env.LOCAL_DEMO_AUTHZ;
     else process.env.LOCAL_DEMO_AUTHZ = localDemoAuthz;
