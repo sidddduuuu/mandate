@@ -2,11 +2,11 @@
   "version": 1,
   "project": {
     "catalog": "prod",
-    "initializedAt": "2026-07-31T00:27:28.526Z",
-    "merchantDisplayName": "Huetic",
-    "merchantId": "acct_1TLBEdAbn6sGifV3",
-    "projectId": "project_61V8SFk6GImsTaVAA16UUZBz1iSQbaD7vCryDHCkyNY8",
-    "projectName": "mandate"
+    "merchantId": "acct_1Tz3ijPRMWxS6fjC",
+    "merchantDisplayName": "Mandate",
+    "projectId": "project_61V8SIEGeigaoVBlq16V8Rg51gSQdlMGcQLwhq8jgSMi",
+    "projectName": "mandate",
+    "initializedAt": "2026-07-31T00:30:02.795Z"
   },
   "providers": {
     "auth0": {
