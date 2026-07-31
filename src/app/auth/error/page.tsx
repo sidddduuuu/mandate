@@ -11,6 +11,7 @@ export default async function AuthErrorPage({ searchParams }: Props) {
   const orgHint = process.env.SEED_BUYER_AUTH0_ORG_ID ?? "org_buyer";
 
   const isOrgNotAllowed = /organization is not allowed/i.test(detail);
+  const isAudienceMissing = /service not found|mandate\.local\/api/i.test(detail);
 
   return (
     <main id="main" className="app-shell">
@@ -44,6 +45,21 @@ export default async function AuthErrorPage({ searchParams }: Props) {
             </li>
             <li>Add your user as a member of the organization</li>
           </ol>
+        </section>
+      ) : null}
+
+      {isAudienceMissing ? (
+        <section className="detail-block" style={{ marginTop: "1.5rem" }}>
+          <h2>Fix the API audience</h2>
+          <p>
+            Auth0 has no API with identifier <span className="mono">https://mandate.local/api</span>.
+            For store-owner login, leave <span className="mono">AUTH0_INCLUDE_AUDIENCE_IN_LOGIN=0</span>{" "}
+            in <span className="mono">.env</span> (already the default for local UI).
+          </p>
+          <p>
+            Only create that API under <strong>Applications → APIs</strong> if you need access
+            tokens for agent M2M calls.
+          </p>
         </section>
       ) : null}
 
