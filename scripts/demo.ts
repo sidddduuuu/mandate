@@ -155,6 +155,7 @@ async function main(): Promise<void> {
     sub: "buyer-agent",
     org_id: "org_buyer",
     scope: "orders:create orders:read",
+    client_id: "buyer-client",
   });
   const session = encodeSessionCookie({
     sub: "human-approver",

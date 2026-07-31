@@ -174,8 +174,9 @@ export function listOffersForProduct(
          AND active = 1
          AND advisory_quantity >= ?
          AND valid_from <= ?
-         AND valid_until >= ?
-         AND currency = ?`,
+         AND valid_until > ?
+         AND currency = ?
+       ORDER BY unit_price_minor ASC, supplier_org_id ASC`,
     )
     .all(
       params.productKey,

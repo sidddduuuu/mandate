@@ -64,25 +64,6 @@ function parseScopeClaim(value: unknown): string[] {
   return [];
 }
 
-function resolveAuth0OrgId(
-  payload: Record<string, unknown>,
-  clientId: string | undefined,
-): string {
-  const cfg = getConfig();
-  const orgClaim = payload.org_id;
-  if (typeof orgClaim === "string" && orgClaim.length > 0) {
-    return orgClaim;
-  }
-  if (clientId && cfg.m2mClientOrgMap[clientId]) {
-    return cfg.m2mClientOrgMap[clientId]!;
-  }
-  if (clientId) {
-    // DB fallback mapping
-    return "";
-  }
-  throw new AppError(401, "unauthorized", "Missing organization context");
-}
-
 export function lookupOrgByAuth0Id(db: Db, auth0OrgId: string): OrgRow {
   const row = db
     .prepare(`SELECT * FROM organizations WHERE auth0_org_id = ?`)
@@ -252,28 +233,35 @@ export async function authenticateRequest(
       const sub = typeof payload.sub === "string" ? payload.sub : "";
       if (!sub) throw new AppError(401, "unauthorized", "Missing subject");
 
-      const clientId =
-        (typeof payload.azp === "string" && payload.azp) ||
-        (typeof payload.client_id === "string" && payload.client_id) ||
-        undefined;
+      const azp = typeof payload.azp === "string" ? payload.azp : undefined;
+      const clientClaim =
+        typeof payload.client_id === "string" ? payload.client_id : undefined;
+      if (azp && clientClaim && azp !== clientClaim) {
+        throw new AppError(401, "ambiguous_client_identity", "Client identity is ambiguous");
+      }
+      const clientId = azp ?? clientClaim;
+      if (!clientId) {
+        throw new AppError(401, "missing_client_identity", "Client identity is required");
+      }
 
-      let auth0OrgId = "";
-      try {
-        auth0OrgId = resolveAuth0OrgId(payload, clientId);
-      } catch {
-        auth0OrgId = "";
+      let org = lookupOrgByClientId(db, clientId);
+      if (!org) {
+        const mappedAuth0 = getConfig().m2mClientOrgMap[clientId];
+        if (mappedAuth0) org = lookupOrgByAuth0Id(db, mappedAuth0);
       }
-      let org: OrgRow | null = null;
-      if (auth0OrgId) {
-        org = lookupOrgByAuth0Id(db, auth0OrgId);
-      } else if (clientId) {
-        org = lookupOrgByClientId(db, clientId);
-        if (!org) {
-          const mappedAuth0 = getConfig().m2mClientOrgMap[clientId];
-          if (mappedAuth0) org = lookupOrgByAuth0Id(db, mappedAuth0);
-        }
+      if (!org) {
+        throw new AppError(403, "unknown_client_identity", "Client is not configured");
       }
-      if (!org) throw new AppError(401, "unauthorized", "Missing organization context");
+      if (
+        typeof payload.org_id === "string" &&
+        payload.org_id !== org.auth0_org_id
+      ) {
+        throw new AppError(
+          403,
+          "organization_mismatch",
+          "Token organization does not match client",
+        );
+      }
 
       const scopes = new Set(parseScopeClaim(payload.scope ?? payload.permissions));
       return {
@@ -372,6 +360,7 @@ export async function mintTestAgentToken(claims: {
   org_id?: string;
   scope: string;
   client_id?: string;
+  azp?: string;
 }): Promise<string> {
   const cfg = getConfig();
   const secret = new TextEncoder().encode(cfg.AUTH_TEST_HMAC_SECRET);
@@ -379,7 +368,7 @@ export async function mintTestAgentToken(claims: {
     org_id: claims.org_id,
     scope: claims.scope,
     client_id: claims.client_id,
-    azp: claims.client_id,
+    azp: claims.azp ?? claims.client_id,
   })
     .setProtectedHeader({ alg: "HS256" })
     .setSubject(claims.sub)

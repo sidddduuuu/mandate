@@ -166,6 +166,7 @@ describe("Auth0 session + Stripe payment integration", () => {
       sub: "agent|buyer",
       org_id: "org_buyer",
       scope: "orders:create orders:read",
+      client_id: "buyer-client",
     });
 
     const agent = await authenticateRequest(

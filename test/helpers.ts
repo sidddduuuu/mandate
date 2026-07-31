@@ -24,6 +24,8 @@ export type DemoFixture = {
 export function setupFixture(name: string): DemoFixture {
   process.env.AUTH_TEST_MODE = "1";
   process.env.DATABASE_PATH = path.resolve(`/tmp/mandate-${name}-${process.pid}.db`);
+  process.env.AUTH0_M2M_CLIENT_ORG_MAP =
+    "buyer-client=org_buyer,supplier-a-client=org_supplier_a,supplier-b-client=org_supplier_b";
   resetConfigCache();
   resetRateLimits();
   const db = resetDbForTests(process.env.DATABASE_PATH);
