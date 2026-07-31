@@ -48,3 +48,15 @@ This repo uses the official Auth0 agent skill (`.agents/skills/auth0`) and
 4. Call `GET /api/session` — Mandate maps the Auth0 `org_id` + permissions into the human actor used by approvals/mandates.
 
 Agent M2M stays on bearer JWTs (`AUTH0_AUDIENCE` + JWKS). Set `AUTH_TEST_MODE=1` only for local HS256 agent tokens and the test `mandate_session` cookie.
+
+### Auth0 + Stripe readiness
+
+```bash
+npm run check:integrations   # reports whether env credentials are present
+npm test                     # includes Auth0-session + Stripe adapter integration tests
+npm run smoke:stripe         # real Stripe test-mode PaymentIntent smoke (needs sk_test_…)
+```
+
+Integration tests mock an Auth0 Organization session and exercise Mandate’s Stripe adapter
+(create → confirm → webhook → `paid`). They do **not** call a live Auth0 tenant. Live Stripe
+smoke refuses `sk_live_` keys.
