@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "project": {
+    "catalog": "prod",
+    "merchantId": "acct_1Tz3ijPRMWxS6fjC",
+    "merchantDisplayName": "Mandate",
+    "projectId": "project_61V8SIEGeigaoVBlq16V8Rg51gSQdlMGcQLwhq8jgSMi",
+    "projectName": "mandate",
+    "initializedAt": "2026-07-31T00:30:02.795Z"
+  },
+  "providers": {},
+  "resources": {}
+}
