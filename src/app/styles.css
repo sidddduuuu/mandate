@@ -31,3 +31,37 @@ h1 {
 code {
   color: #a7f36b;
 }
+
+form {
+  display: grid;
+  gap: 1rem;
+  max-width: 34rem;
+}
+
+label {
+  display: grid;
+  gap: .4rem;
+  font-weight: 650;
+}
+
+input,
+button {
+  border: 1px solid #777;
+  border-radius: .4rem;
+  background: #1d1d1d;
+  color: inherit;
+  font: inherit;
+  padding: .75rem;
+}
+
+button {
+  background: #a7f36b;
+  color: #111;
+  cursor: pointer;
+  font-weight: 750;
+}
+
+:focus-visible {
+  outline: 3px solid #a7f36b;
+  outline-offset: 3px;
+}

@@ -72,6 +72,7 @@ test("tenant-bound Catalog replacement is atomic, versioned, and audited", async
 
   const workspace = mkdtempSync(join(tmpdir(), "mandate-catalog-"));
   const databasePath = join(workspace, "mandate.sqlite");
+  const sessionSecret = "mandate-test-session-secret-at-least-32-characters";
   const port = await freePort();
   let output = "";
   const child = spawn(
@@ -84,6 +85,8 @@ test("tenant-bound Catalog replacement is atomic, versioned, and audited", async
         DATABASE_PATH: databasePath,
         AUTH0_ISSUER_BASE_URL: issuer,
         AUTH0_AUDIENCE: audience,
+        AUTH0_SECRET: sessionSecret,
+        APP_BASE_URL: `http://127.0.0.1:${port}`,
         M2M_CLIENTS_JSON: JSON.stringify({
           "supplier-a-client": {
             organization_id: "supplier-a",
@@ -115,6 +118,12 @@ test("tenant-bound Catalog replacement is atomic, versioned, and audited", async
             id: "buyer-a",
             auth0_org_id: "org_buyer_a",
             name: "Buyer A",
+            kind: "buyer",
+          },
+          {
+            id: "buyer-b",
+            auth0_org_id: "org_buyer_b",
+            name: "Buyer B",
             kind: "buyer",
           },
         ]),
@@ -308,11 +317,138 @@ test("tenant-bound Catalog replacement is atomic, versioned, and audited", async
   assert.equal(empty.json.data.items[0].active, 0);
   assert.equal(empty.json.data.items[0].version, 3);
 
+  const session = ({
+    org = "org_buyer_a",
+    permissions = ["mandates:write"],
+    subject = "human-admin-a",
+  } = {}) =>
+    new SignJWT({ org_id: org, permissions })
+      .setProtectedHeader({ alg: "HS256" })
+      .setIssuer(issuer)
+      .setAudience("mandate:web")
+      .setSubject(subject)
+      .setIssuedAt()
+      .setExpirationTime("5m")
+      .sign(new TextEncoder().encode(sessionSecret));
+  const mandateRequest = async ({
+    token,
+    body,
+    origin = base,
+    authorization,
+  }) => {
+    const response = await fetch(`${base}/api/mandates`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        ...(origin ? { origin } : {}),
+        ...(token ? { cookie: `mandate_session=${encodeURIComponent(token)}` } : {}),
+        ...(authorization ? { authorization } : {}),
+      },
+      body: JSON.stringify(body),
+    });
+    return { status: response.status, json: await response.json() };
+  };
+  const mandate = {
+    valid_from: "2026-07-30T19:00:00.000Z",
+    valid_until: "2026-08-30T20:00:00.000Z",
+    currency: "USD",
+    autonomous_limit_minor: 10_000,
+    hard_limit_minor: 100_000,
+    budget_window: {
+      starts_at: "2026-07-01T00:00:00.000Z",
+      ends_at: "2026-08-01T00:00:00.000Z",
+      limit_minor: 500_000,
+    },
+    allowed_supplier_ids: ["supplier-a"],
+    allowed_categories: ["produce"],
+    delivery_location_ids: ["kitchen"],
+  };
+  const sessionA = await session();
+  assert.equal((await mandateRequest({ body: mandate })).status, 401);
+  assert.equal(
+    (await mandateRequest({ token: sessionA, body: mandate, origin: null })).status,
+    403,
+  );
+  assert.equal(
+    (
+      await mandateRequest({
+        token: sessionA,
+        body: mandate,
+        authorization: `Bearer ${tokenA}`,
+      })
+    ).status,
+    403,
+  );
+  const future = await mandateRequest({
+    token: sessionA,
+    body: { ...mandate, valid_from: "2026-07-31T20:00:00.000Z" },
+  });
+  assert.equal(future.status, 422);
+  assert.equal(future.json.error.code, "future_activation_unsupported");
+
+  const firstMandate = await mandateRequest({
+    token: sessionA,
+    body: mandate,
+  });
+  assert.equal(firstMandate.status, 201);
+  assert.equal(firstMandate.json.data.version, 1);
+  assert.equal(firstMandate.json.data.state, "active");
+
+  const replacement = await mandateRequest({
+    token: sessionA,
+    body: {
+      ...mandate,
+      autonomous_limit_minor: 12_000,
+      budget_window: { ...mandate.budget_window, limit_minor: 600_000 },
+    },
+  });
+  assert.equal(replacement.status, 201);
+  assert.equal(replacement.json.data.version, 2);
+
+  const overlap = await mandateRequest({
+    token: sessionA,
+    body: {
+      ...mandate,
+      budget_window: {
+        ...mandate.budget_window,
+        starts_at: "2026-07-02T00:00:00.000Z",
+      },
+    },
+  });
+  assert.equal(overlap.status, 409);
+  assert.equal(overlap.json.error.code, "overlapping_budget_window");
+
+  const concurrent = await Promise.all([
+    mandateRequest({ token: sessionA, body: mandate }),
+    mandateRequest({ token: sessionA, body: mandate }),
+  ]);
+  assert.deepEqual(
+    concurrent.map(({ status }) => status),
+    [201, 201],
+  );
+  assert.deepEqual(
+    concurrent.map(({ json }) => json.data.version).sort(),
+    [3, 4],
+  );
+
+  const sessionB = await session({
+    org: "org_buyer_b",
+    subject: "human-admin-b",
+  });
+  const tenantB = await mandateRequest({ token: sessionB, body: mandate });
+  assert.equal(tenantB.status, 201);
+  assert.equal(tenantB.json.data.version, 1);
+
+  const surface = await fetch(`${base}/mandates`);
+  const html = await surface.text();
+  assert.match(html, /Create Purchasing Mandate/);
+  assert.match(html, /Future activation is not supported/);
+
   const db = new DatabaseSync(databasePath);
   const denials = db
     .prepare(`
       SELECT organization_id, payload_json FROM audit_events
-      WHERE event_type = 'authorization.denied'
+      WHERE event_type = 'authorization.denied' AND actor_type = 'unknown'
       ORDER BY id
     `)
     .all();
@@ -323,5 +459,40 @@ test("tenant-bound Catalog replacement is atomic, versioned, and audited", async
     /append-only/,
   );
   assert.throws(() => db.exec("DELETE FROM audit_events"), /append-only/);
+  assert.equal(
+    db
+      .prepare(`
+        SELECT COUNT(*) AS count FROM mandates
+        WHERE buyer_organization_id = 'buyer-a' AND state = 'active'
+      `)
+      .get().count,
+    1,
+  );
+  assert.equal(
+    db
+      .prepare(`
+        SELECT COUNT(*) AS count FROM budget_windows
+        WHERE buyer_organization_id = 'buyer-a'
+      `)
+      .get().count,
+    1,
+  );
+  assert.throws(
+    () =>
+      db.exec(`
+        UPDATE mandates SET hard_limit_minor = 999999
+        WHERE buyer_organization_id = 'buyer-a'
+      `),
+    /immutable/,
+  );
+  assert.equal(
+    db
+      .prepare(`
+        SELECT COUNT(*) AS count FROM audit_events
+        WHERE organization_id = 'buyer-a' AND event_type = 'mandate.created'
+      `)
+      .get().count,
+    4,
+  );
   db.close();
 });

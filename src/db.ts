@@ -113,6 +113,68 @@ function migrate(db: DatabaseSync) {
       occurred_at TEXT NOT NULL
     ) STRICT;
 
+    CREATE TABLE IF NOT EXISTS budget_windows (
+      buyer_organization_id TEXT NOT NULL REFERENCES organizations(id),
+      currency TEXT NOT NULL,
+      starts_at TEXT NOT NULL,
+      ends_at TEXT NOT NULL,
+      committed_minor INTEGER NOT NULL DEFAULT 0 CHECK (committed_minor >= 0),
+      PRIMARY KEY (buyer_organization_id, currency, starts_at, ends_at)
+    ) STRICT;
+
+    CREATE TABLE IF NOT EXISTS mandates (
+      id TEXT PRIMARY KEY,
+      buyer_organization_id TEXT NOT NULL REFERENCES organizations(id),
+      version INTEGER NOT NULL CHECK (version > 0),
+      state TEXT NOT NULL CHECK (state IN ('active', 'superseded', 'revoked')),
+      valid_from TEXT NOT NULL,
+      valid_until TEXT NOT NULL,
+      currency TEXT NOT NULL,
+      autonomous_limit_minor INTEGER NOT NULL CHECK (autonomous_limit_minor >= 0),
+      hard_limit_minor INTEGER NOT NULL CHECK (hard_limit_minor > 0),
+      budget_starts_at TEXT NOT NULL,
+      budget_ends_at TEXT NOT NULL,
+      budget_limit_minor INTEGER NOT NULL CHECK (budget_limit_minor > 0),
+      allowed_supplier_ids_json TEXT NOT NULL,
+      allowed_categories_json TEXT NOT NULL,
+      delivery_location_ids_json TEXT NOT NULL,
+      schema_version INTEGER NOT NULL,
+      policy_hash TEXT NOT NULL,
+      creator_subject TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      UNIQUE (buyer_organization_id, version),
+      FOREIGN KEY (buyer_organization_id, currency, budget_starts_at, budget_ends_at)
+        REFERENCES budget_windows (buyer_organization_id, currency, starts_at, ends_at)
+    ) STRICT;
+
+    CREATE UNIQUE INDEX IF NOT EXISTS mandates_one_active
+    ON mandates (buyer_organization_id) WHERE state = 'active';
+
+    CREATE TRIGGER IF NOT EXISTS mandates_immutable_policy
+    BEFORE UPDATE ON mandates
+    WHEN
+      NEW.id <> OLD.id OR
+      NEW.buyer_organization_id <> OLD.buyer_organization_id OR
+      NEW.version <> OLD.version OR
+      NEW.valid_from <> OLD.valid_from OR
+      NEW.valid_until <> OLD.valid_until OR
+      NEW.currency <> OLD.currency OR
+      NEW.autonomous_limit_minor <> OLD.autonomous_limit_minor OR
+      NEW.hard_limit_minor <> OLD.hard_limit_minor OR
+      NEW.budget_starts_at <> OLD.budget_starts_at OR
+      NEW.budget_ends_at <> OLD.budget_ends_at OR
+      NEW.budget_limit_minor <> OLD.budget_limit_minor OR
+      NEW.allowed_supplier_ids_json <> OLD.allowed_supplier_ids_json OR
+      NEW.allowed_categories_json <> OLD.allowed_categories_json OR
+      NEW.delivery_location_ids_json <> OLD.delivery_location_ids_json OR
+      NEW.schema_version <> OLD.schema_version OR
+      NEW.policy_hash <> OLD.policy_hash OR
+      NEW.creator_subject <> OLD.creator_subject OR
+      NEW.created_at <> OLD.created_at
+    BEGIN
+      SELECT RAISE(ABORT, 'mandate versions are immutable');
+    END;
+
     CREATE TRIGGER IF NOT EXISTS audit_events_no_update
     BEFORE UPDATE ON audit_events BEGIN
       SELECT RAISE(ABORT, 'audit_events are append-only');
