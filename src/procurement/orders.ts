@@ -43,6 +43,9 @@ export type OrderRow = {
   currency: string;
   total_minor: number;
   delivery_location_id: string;
+  budget_window_start: string;
+  budget_window_end: string;
+  budget_limit_minor: number;
   status: OrderStatus;
   policy_decision: "allow" | "require_approval" | "deny";
   policy_reasons_json: string;
@@ -58,19 +61,16 @@ export type OrderRow = {
   updated_at: string;
 };
 
-const orderRequestSchema = z.object({
-  product_key: z.string().min(1).max(128),
-  unit: z.string().min(1).max(32),
-  quantity: z.number().int().positive(),
-  delivery_location_id: z.string().min(1).max(128),
-});
-
-const RESERVING_STATUSES: OrderStatus[] = [
-  "awaiting_approval",
-  "payment_pending",
-  "payment_failed",
-  "paid",
-];
+const orderRequestSchema = z
+  .object({
+    product_key: z.string().regex(/^[a-z0-9][a-z0-9._:-]{0,127}$/),
+    unit: z.string().regex(/^[a-z0-9][a-z0-9._:-]{0,31}$/),
+    quantity: z.number().int().safe().positive(),
+    delivery_location_id: z
+      .string()
+      .regex(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/),
+  })
+  .strict();
 
 const ALLOWED_TRANSITIONS: Record<OrderStatus, OrderStatus[]> = {
   denied: [],
@@ -126,23 +126,25 @@ function transitionOrder(
 export function committedSpendMinor(
   db: Db,
   buyerOrgId: string,
+  currency: string,
   budgetWindowStart: string,
   budgetWindowEnd: string,
   excludeOrderId?: string,
 ): number {
   const row = db
     .prepare(
-      `SELECT COALESCE(SUM(total_minor), 0) AS total
-       FROM orders
+      `SELECT COALESCE(SUM(amount_minor), 0) AS total
+       FROM budget_reservations
        WHERE buyer_org_id = ?
-         AND status IN (${RESERVING_STATUSES.map(() => "?").join(",")})
-         AND created_at >= ?
-         AND created_at <= ?
-         AND (? IS NULL OR id != ?)`,
+         AND currency = ?
+         AND budget_window_start = ?
+         AND budget_window_end = ?
+         AND status IN ('held', 'consumed')
+         AND (? IS NULL OR order_id != ?)`,
     )
     .get(
       buyerOrgId,
-      ...RESERVING_STATUSES,
+      currency,
       budgetWindowStart,
       budgetWindowEnd,
       excludeOrderId ?? null,
@@ -200,78 +202,119 @@ export async function createOrder(
   requestId: string,
   stripe: StripeAdapter,
 ): Promise<{ order: OrderRow; httpStatus: number }> {
+  const auditDenial = (reasons: string[], details: Record<string, unknown> = {}) =>
+    writeAudit(db, {
+      aggregateType: "order",
+      organizationId: actor.organizationId,
+      eventType: "order.denied",
+      actorType: actor.actorType,
+      actorSubject: actor.subject,
+      requestId,
+      payload: { reasons, ...details },
+    });
+
+  if (actor.actorType !== "agent" || !actor.scopes.has("orders:create")) {
+    auditDenial(["forbidden"]);
+    throw new AppError(403, "forbidden", "Buyer agent scope orders:create required");
+  }
+  const organization = db
+    .prepare(`SELECT kind FROM organizations WHERE id = ?`)
+    .get(actor.organizationId) as { kind: "buyer" | "supplier" } | undefined;
+  if (organization?.kind !== "buyer") {
+    auditDenial(["tenant_mismatch"]);
+    throw new AppError(403, "tenant_mismatch", "Buyer organization required");
+  }
   if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(idempotencyKey)) {
+    auditDenial(["invalid_idempotency_key"]);
     throw new AppError(400, "invalid_idempotency_key", "Idempotency-Key must be a UUID");
   }
 
   const parsed = orderRequestSchema.safeParse(rawBody);
   if (!parsed.success) {
-    throw new AppError(400, "invalid_request", "Invalid order payload");
-  }
-
-  const requestHash = sha256Hex(stableStringify(parsed.data));
-  const existing = db
-    .prepare(
-      `SELECT * FROM orders
-       WHERE buyer_org_id = ? AND requester_subject = ? AND idempotency_key = ?`,
-    )
-    .get(actor.organizationId, actor.subject, idempotencyKey) as OrderRow | undefined;
-
-  if (existing) {
-    if (existing.request_hash !== requestHash) {
-      writeAudit(db, {
-        aggregateType: "order",
-        aggregateId: existing.id,
-        organizationId: actor.organizationId,
-        eventType: "order.idempotency_conflict",
-        actorType: "agent",
-        actorSubject: actor.subject,
-        requestId,
-        payload: { idempotency_key: idempotencyKey },
-      });
-      throw new AppError(409, "idempotency_conflict", "Idempotency key reused with different payload");
-    }
-    writeAudit(db, {
-      aggregateType: "order",
-      aggregateId: existing.id,
-      organizationId: actor.organizationId,
-      eventType: "order.idempotent_replay",
-      actorType: "agent",
-      actorSubject: actor.subject,
-      requestId,
-      payload: { status: existing.status },
-    });
-    if (existing.status === "payment_pending" || existing.status === "payment_failed") {
-      await resumePayment(db, existing, requestId, stripe);
-      return { order: getOrder(db, existing.id)!, httpStatus: 200 };
-    }
-    const status =
-      existing.status === "awaiting_approval"
-        ? 202
-        : existing.status === "denied"
-          ? 200
-          : 200;
-    return { order: existing, httpStatus: status };
+    const quantity =
+      rawBody && typeof rawBody === "object"
+        ? (rawBody as Record<string, unknown>).quantity
+        : undefined;
+    const reason =
+      !Number.isSafeInteger(quantity) || (quantity as number) <= 0
+        ? "malformed_quantity"
+        : "invalid_request";
+    auditDenial([reason]);
+    throw new AppError(400, reason, "Invalid order payload");
   }
 
   const cfg = getConfig();
-  const now = nowIso();
-  let created: OrderRow;
-
-  try {
-    created = withImmediateTransaction(db, () => {
-      const mandate = getActiveMandate(db, actor.organizationId);
-      if (!mandate) {
+  if (parsed.data.quantity > cfg.MAX_QUANTITY) {
+    auditDenial(["malformed_quantity"]);
+    throw new AppError(400, "malformed_quantity", "Quantity exceeds maximum");
+  }
+  const requestHash = sha256Hex(stableStringify(parsed.data));
+  const outcome = withImmediateTransaction(
+    db,
+    ():
+      | { kind: "created" | "existing"; order: OrderRow }
+      | { kind: "error"; error: AppError } => {
+      const existing = db
+        .prepare(
+          `SELECT * FROM orders
+           WHERE buyer_org_id = ? AND requester_subject = ? AND idempotency_key = ?`,
+        )
+        .get(
+          actor.organizationId,
+          actor.subject,
+          idempotencyKey,
+        ) as OrderRow | undefined;
+      if (existing) {
+        if (existing.request_hash !== requestHash) {
+          writeAudit(db, {
+            aggregateType: "order",
+            aggregateId: existing.id,
+            organizationId: actor.organizationId,
+            eventType: "order.idempotency_conflict",
+            actorType: "agent",
+            actorSubject: actor.subject,
+            requestId,
+            payload: { idempotency_key: idempotencyKey },
+          });
+          return {
+            kind: "error",
+            error: new AppError(
+              409,
+              "idempotency_conflict",
+              "Idempotency key reused with different payload",
+            ),
+          };
+        }
         writeAudit(db, {
           aggregateType: "order",
+          aggregateId: existing.id,
           organizationId: actor.organizationId,
-          eventType: "order.denied",
+          eventType: "order.idempotent_replay",
           actorType: "agent",
           actorSubject: actor.subject,
           requestId,
-          payload: { reasons: ["missing_mandate"] },
+          payload: { status: existing.status },
         });
-        throw new AppError(403, "missing_mandate", "No active purchasing mandate");
+        return { kind: "existing", order: existing };
+      }
+
+      const mandate = getActiveMandate(db, actor.organizationId);
+      if (!mandate) {
+        const inactive = db
+          .prepare(`SELECT id FROM mandates WHERE buyer_org_id = ? LIMIT 1`)
+          .get(actor.organizationId);
+        const reason = inactive ? "inactive_mandate" : "missing_mandate";
+        auditDenial([reason]);
+        return {
+          kind: "error",
+          error: new AppError(
+            403,
+            reason,
+            inactive
+              ? "Purchasing Mandate is inactive"
+              : "No Purchasing Mandate exists",
+          ),
+        };
       }
 
       const policyMandate = mandateToPolicy(mandate);
@@ -280,6 +323,7 @@ export async function createOrder(
         maxQuantity: cfg.MAX_QUANTITY,
         maxOrderTotal: cfg.MAX_ORDER_TOTAL_MINOR,
       };
+      const currentTime = nowIso();
 
       const offers = listOffersForProduct(db, {
         productKey: parsed.data.product_key,
@@ -289,68 +333,127 @@ export async function createOrder(
         allowedSupplierOrgIds: policyMandate.allowed_supplier_org_ids,
         allowedCategories: policyMandate.allowed_categories,
         currency: policyMandate.currency,
-        nowIso: now,
+        nowIso: currentTime,
       });
-      const selected = selectCheapestOffer(offers, parsed.data.quantity, caps);
+      let selected: ReturnType<typeof selectCheapestOffer>;
+      try {
+        selected = selectCheapestOffer(offers, parsed.data.quantity, caps);
+      } catch (error) {
+        if (!(error instanceof MoneyError)) throw error;
+        auditDenial(["unsafe_order_total"]);
+        return {
+          kind: "error",
+          error: new AppError(
+            422,
+            "unsafe_order_total",
+            "Order total exceeds safe bounds",
+          ),
+        };
+      }
 
       const spend = committedSpendMinor(
         db,
         actor.organizationId,
+        mandate.currency,
         mandate.budget_window_start,
         mandate.budget_window_end,
       );
 
-      const evaluation = evaluatePolicy({
-        nowIso: now,
-        buyerOrgId: actor.organizationId,
-        actorBuyerOrgId: actor.organizationId,
-        quantity: parsed.data.quantity,
-        totalMinor: selected?.totalMinor ?? 0,
-        deliveryLocationId: parsed.data.delivery_location_id,
-        offer: selected
-          ? {
-              supplierOrgId: selected.offer.supplier_org_id,
-              category: selected.offer.category,
-              currency: selected.offer.currency,
-              active: selected.offer.active === 1,
-              expired: false,
-              unitPriceMinor: selected.offer.unit_price_minor,
-            }
-          : {
-              supplierOrgId: "",
-              category: "",
-              currency: mandate.currency,
-              active: false,
-              expired: true,
-              unitPriceMinor: 0,
-            },
-        mandate: policyMandate,
-        committedSpendMinor: spend,
-      });
-
-      let decision = evaluation.decision;
-      let reasons = evaluation.reasons;
-      if (!selected) {
-        decision = "deny";
-        reasons = ["stale_offer"];
-      }
-
-      const offer = selected?.offer;
-      const snapshot =
-        offer ??
+      const diagnosticOffer =
+        selected?.offer ??
         (db
           .prepare(
             `SELECT * FROM catalog_items
              WHERE product_key = ? AND unit = ?
-             ORDER BY supplier_org_id ASC LIMIT 1`,
+             ORDER BY unit_price_minor ASC, supplier_org_id ASC
+             LIMIT 1`,
           )
-          .get(parsed.data.product_key, parsed.data.unit) as CatalogItemRow | undefined);
-
-      if (!snapshot) {
-        throw new AppError(404, "no_offers", "No catalog items for product");
+          .get(
+            parsed.data.product_key,
+            parsed.data.unit,
+          ) as CatalogItemRow | undefined);
+      if (!diagnosticOffer) {
+        auditDenial(["stale_offer"], {
+          product_key: parsed.data.product_key,
+          unit: parsed.data.unit,
+        });
+        return {
+          kind: "error",
+          error: new AppError(
+            404,
+            "no_eligible_offer",
+            "No eligible Offer is available",
+          ),
+        };
       }
 
-      const totalMinor = selected?.totalMinor ?? snapshot.unit_price_minor * parsed.data.quantity;
+      let diagnosticTotal = selected?.totalMinor ?? 0;
+      if (!selected) {
+        try {
+          diagnosticTotal = computeOrderTotalMinor(
+            diagnosticOffer.unit_price_minor,
+            parsed.data.quantity,
+            caps,
+          );
+        } catch (error) {
+          if (!(error instanceof MoneyError)) throw error;
+          auditDenial(["unsafe_order_total"]);
+          return {
+            kind: "error",
+            error: new AppError(
+              422,
+              "unsafe_order_total",
+              "Order total exceeds safe bounds",
+            ),
+          };
+        }
+      }
+
+      const evaluation = evaluatePolicy({
+        nowIso: currentTime,
+        buyerOrgId: actor.organizationId,
+        actorBuyerOrgId: actor.organizationId,
+        quantity: parsed.data.quantity,
+        totalMinor: diagnosticTotal,
+        deliveryLocationId: parsed.data.delivery_location_id,
+        offer: {
+          supplierOrgId: diagnosticOffer.supplier_org_id,
+          category: diagnosticOffer.category,
+          currency: diagnosticOffer.currency,
+          active: diagnosticOffer.active === 1,
+          expired:
+            diagnosticOffer.advisory_quantity < parsed.data.quantity ||
+            Date.parse(diagnosticOffer.valid_from) > Date.parse(currentTime) ||
+            Date.parse(diagnosticOffer.valid_until) <= Date.parse(currentTime),
+          unitPriceMinor: diagnosticOffer.unit_price_minor,
+        },
+        mandate: policyMandate,
+        committedSpendMinor: spend,
+      });
+
+      if (!selected) {
+        const reasons =
+          evaluation.decision === "deny"
+            ? evaluation.reasons
+            : (["stale_offer"] as const);
+        auditDenial([...reasons], {
+          product_key: parsed.data.product_key,
+          unit: parsed.data.unit,
+        });
+        return {
+          kind: "error",
+          error: new AppError(
+            403,
+            reasons[0] ?? "no_eligible_offer",
+            "Order is not permitted",
+          ),
+        };
+      }
+
+      const decision = evaluation.decision;
+      const reasons = evaluation.reasons;
+      const snapshot = selected.offer;
+      const totalMinor = selected.totalMinor;
       const status: OrderStatus =
         decision === "deny"
           ? "denied"
@@ -358,9 +461,10 @@ export async function createOrder(
             ? "awaiting_approval"
             : "payment_pending";
 
+      const createdAt = currentTime;
       const approvalExpires =
         status === "awaiting_approval"
-          ? new Date(Date.parse(now) + cfg.APPROVAL_TTL_SECONDS * 1000).toISOString()
+          ? new Date(Date.parse(createdAt) + 15 * 60_000).toISOString()
           : null;
 
       const id = newId("ord");
@@ -370,10 +474,11 @@ export async function createOrder(
           mandate_id, mandate_version, mandate_policy_hash,
           catalog_item_id, catalog_version, sku, product_key, category, unit,
           unit_price_minor, quantity, currency, total_minor, delivery_location_id,
+          budget_window_start, budget_window_end, budget_limit_minor,
           status, policy_decision, policy_reasons_json, idempotency_key, request_hash,
           approval_expires_at, stripe_payment_intent_id, stripe_create_started_at,
           created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?)`,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?)`,
       ).run(
         id,
         actor.organizationId,
@@ -391,19 +496,95 @@ export async function createOrder(
         snapshot.unit_price_minor,
         parsed.data.quantity,
         snapshot.currency,
-        selected ? totalMinor : Math.min(totalMinor, cfg.MAX_ORDER_TOTAL_MINOR),
+        totalMinor,
         parsed.data.delivery_location_id,
+        mandate.budget_window_start,
+        mandate.budget_window_end,
+        mandate.budget_limit_minor,
         status,
         decision,
         JSON.stringify(reasons),
         idempotencyKey,
         requestHash,
         approvalExpires,
-        now,
-        now,
+        createdAt,
+        createdAt,
       );
 
       const row = getOrder(db, id)!;
+      writeAudit(db, {
+        aggregateType: "order",
+        aggregateId: id,
+        organizationId: actor.organizationId,
+        eventType: "order.policy_evaluated",
+        actorType: "agent",
+        actorSubject: actor.subject,
+        requestId,
+        payload: {
+          decision,
+          reasons,
+          mandate_version: row.mandate_version,
+          mandate_policy_hash: row.mandate_policy_hash,
+          catalog_item_id: row.catalog_item_id,
+          catalog_version: row.catalog_version,
+          total_minor: row.total_minor,
+          currency: row.currency,
+        },
+      });
+      if (status === "denied") {
+        writeAudit(db, {
+          aggregateType: "order",
+          aggregateId: id,
+          organizationId: actor.organizationId,
+          eventType: "order.denied",
+          actorType: "agent",
+          actorSubject: actor.subject,
+          requestId,
+          payload: { reasons },
+        });
+      } else {
+        db.prepare(
+          `INSERT INTO budget_reservations (
+            order_id, buyer_org_id, currency, budget_window_start,
+            budget_window_end, amount_minor, status, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, 'held', ?, ?)`,
+        ).run(
+          id,
+          actor.organizationId,
+          mandate.currency,
+          mandate.budget_window_start,
+          mandate.budget_window_end,
+          totalMinor,
+          createdAt,
+          createdAt,
+        );
+        writeAudit(db, {
+          aggregateType: "budget_reservation",
+          aggregateId: id,
+          organizationId: actor.organizationId,
+          eventType: "budget.reserved",
+          actorType: "agent",
+          actorSubject: actor.subject,
+          requestId,
+          payload: {
+            order_id: id,
+            amount_minor: totalMinor,
+            currency: mandate.currency,
+            budget_window_start: mandate.budget_window_start,
+            budget_window_end: mandate.budget_window_end,
+          },
+        });
+      }
+      writeAudit(db, {
+        aggregateType: "order",
+        aggregateId: id,
+        organizationId: actor.organizationId,
+        eventType: "order.transition",
+        actorType: "agent",
+        actorSubject: actor.subject,
+        requestId,
+        payload: { from: null, to: status },
+      });
       writeAudit(db, {
         aggregateType: "order",
         aggregateId: id,
@@ -424,24 +605,31 @@ export async function createOrder(
           mandate_policy_hash: row.mandate_policy_hash,
         },
       });
-      return row;
-    });
-  } catch (err) {
-    if (err instanceof MoneyError) {
-      throw new AppError(400, "invalid_amount", err.message);
+      return { kind: "created", order: row };
+    },
+  );
+
+  if (outcome.kind === "error") throw outcome.error;
+  const order = outcome.order;
+  if (outcome.kind === "existing") {
+    if (order.status === "payment_pending" || order.status === "payment_failed") {
+      await resumePayment(db, order, requestId, stripe);
+      return { order: getOrder(db, order.id)!, httpStatus: 200 };
     }
-    throw err;
+    return {
+      order,
+      httpStatus: order.status === "awaiting_approval" ? 202 : 200,
+    };
+  }
+  if (order.status === "denied") {
+    return { order, httpStatus: 200 };
+  }
+  if (order.status === "awaiting_approval") {
+    return { order, httpStatus: 202 };
   }
 
-  if (created.status === "denied") {
-    return { order: created, httpStatus: 200 };
-  }
-  if (created.status === "awaiting_approval") {
-    return { order: created, httpStatus: 202 };
-  }
-
-  await initiatePayment(db, created, requestId, stripe);
-  return { order: getOrder(db, created.id)!, httpStatus: 201 };
+  await initiatePayment(db, order, requestId, stripe);
+  return { order: getOrder(db, order.id)!, httpStatus: 201 };
 }
 
 async function initiatePayment(
@@ -723,6 +911,9 @@ export function serializeOrder(order: OrderRow, projection: "buyer" | "supplier"
     catalog_version: order.catalog_version,
     mandate_version: order.mandate_version,
     mandate_policy_hash: order.mandate_policy_hash,
+    budget_window_start: order.budget_window_start,
+    budget_window_end: order.budget_window_end,
+    budget_limit_minor: order.budget_limit_minor,
     approval_expires_at: order.approval_expires_at,
     approval_actor_subject: order.approval_actor_subject,
     approval_decided_at: order.approval_decided_at,
@@ -894,8 +1085,11 @@ export async function abandonFailedPayment(
   });
 }
 
-export function expireApprovals(db: Db, requestId: string): number {
-  const now = nowIso();
+export function expireApprovals(
+  db: Db,
+  requestId: string,
+  now = nowIso(),
+): number {
   return withImmediateTransaction(db, () => {
     const due = db
       .prepare(

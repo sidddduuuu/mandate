@@ -7,7 +7,6 @@ const envSchema = z.object({
   MAX_ORDER_TOTAL_MINOR: z.coerce.number().int().positive().default(100_000_000),
   MAX_UNIT_PRICE_MINOR: z.coerce.number().int().positive().default(10_000_000),
   MAX_QUANTITY: z.coerce.number().int().positive().default(100_000),
-  APPROVAL_TTL_SECONDS: z.coerce.number().int().positive().default(86_400),
   AUTH0_DOMAIN: z.string().min(1).optional(),
   AUTH0_AUDIENCE: z.string().min(1).optional(),
   AUTH0_ISSUER: z.string().url().optional(),

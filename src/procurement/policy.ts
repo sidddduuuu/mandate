@@ -46,6 +46,7 @@ export type PolicyReasonCode =
   | "inactive_mandate"
   | "mandate_not_yet_valid"
   | "mandate_expired"
+  | "inactive_budget_window"
   | "tenant_mismatch"
   | "malformed_quantity"
   | "stale_offer"
@@ -108,17 +109,20 @@ export function evaluatePolicy(input: PolicyEvaluationInput): PolicyEvaluationRe
   if (now < Date.parse(input.mandate.valid_from)) {
     return { decision: "deny", reasons: ["mandate_not_yet_valid"] };
   }
-  if (now > Date.parse(input.mandate.valid_until)) {
+  if (now >= Date.parse(input.mandate.valid_until)) {
     return { decision: "deny", reasons: ["mandate_expired"] };
+  }
+  if (
+    now < Date.parse(input.mandate.budget_window_start) ||
+    now >= Date.parse(input.mandate.budget_window_end)
+  ) {
+    return { decision: "deny", reasons: ["inactive_budget_window"] };
   }
   if (!input.offer.active) {
     return { decision: "deny", reasons: ["inactive_offer"] };
   }
   if (input.offer.expired) {
     return { decision: "deny", reasons: ["stale_offer"] };
-  }
-  if (input.offer.currency !== input.mandate.currency || input.offer.currency !== input.offer.currency) {
-    // currency must match mandate
   }
   if (input.offer.currency !== input.mandate.currency) {
     return { decision: "deny", reasons: ["currency_mismatch"] };

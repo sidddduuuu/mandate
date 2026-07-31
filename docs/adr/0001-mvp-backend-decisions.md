@@ -17,8 +17,8 @@ implementation requires explicit defaults.
 3. **Approval staleness (#4):** Invalidate when catalog `version` differs from the
    order snapshot, or when active/price/currency/validity/advisory quantity no longer
    satisfy the order.
-4. **Approval expiry (#5):** Fixed system TTL via `APPROVAL_TTL_SECONDS` (default 24h),
-   starting at order creation. Expiry transitions `awaiting_approval` → `expired` and
+4. **Approval expiry (#5):** Fixed system TTL of 15 minutes after the order transaction
+   commits. Expiry transitions `awaiting_approval` → `expired` and
    releases budget reservation.
 5. **Mandate revocation (#6):** Supported. Active mandate becomes `revoked`;
    `awaiting_approval` orders for that mandate become `stale`. In-flight payments continue.

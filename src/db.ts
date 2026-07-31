@@ -38,9 +38,56 @@ export function resetDbForTests(dbPath: string): Db {
 }
 
 export function migrate(db: Db = getDb()): void {
+  const hasOrders = db
+    .prepare(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'orders'`)
+    .get();
+  if (hasOrders) {
+    const columns = new Set(
+      (
+        db.prepare(`PRAGMA table_info(orders)`).all() as { name: string }[]
+      ).map((column) => column.name),
+    );
+    for (const [name, type] of [
+      ["budget_window_start", "TEXT"],
+      ["budget_window_end", "TEXT"],
+      ["budget_limit_minor", "INTEGER"],
+    ] as const) {
+      if (!columns.has(name)) db.exec(`ALTER TABLE orders ADD COLUMN ${name} ${type}`);
+    }
+    db.exec(
+      `UPDATE orders
+       SET budget_window_start = (
+             SELECT budget_window_start FROM mandates WHERE mandates.id = orders.mandate_id
+           ),
+           budget_window_end = (
+             SELECT budget_window_end FROM mandates WHERE mandates.id = orders.mandate_id
+           ),
+           budget_limit_minor = (
+             SELECT budget_limit_minor FROM mandates WHERE mandates.id = orders.mandate_id
+           )
+       WHERE budget_window_start IS NULL
+          OR budget_window_end IS NULL
+          OR budget_limit_minor IS NULL`,
+    );
+  }
   const schemaPath = path.resolve(process.cwd(), "db/schema.sql");
   const sql = fs.readFileSync(schemaPath, "utf8");
   db.exec(sql);
+  db.exec(
+    `INSERT OR IGNORE INTO budget_reservations (
+       order_id, buyer_org_id, currency, budget_window_start,
+       budget_window_end, amount_minor, status, created_at, updated_at
+     )
+     SELECT id, buyer_org_id, currency, budget_window_start, budget_window_end,
+            total_minor,
+            CASE
+              WHEN status = 'paid' THEN 'consumed'
+              WHEN status IN ('awaiting_approval', 'payment_pending', 'payment_failed') THEN 'held'
+              ELSE 'released'
+            END,
+            created_at, updated_at
+     FROM orders`,
+  );
 }
 
 export function withImmediateTransaction<T>(db: Db, fn: () => T): T {

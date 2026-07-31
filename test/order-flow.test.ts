@@ -5,14 +5,19 @@ import { closeDb } from "../src/db";
 import { updateCatalog } from "../src/catalog/catalog";
 import { createMandateVersion } from "../src/procurement/mandates";
 import {
+  committedSpendMinor,
   createOrder,
   decideApproval,
+  getOrderForActor,
   handleStripeWebhook,
   abandonFailedPayment,
   expireApprovals,
+  serializeOrder,
 } from "../src/procurement/orders";
 import { setupFixture, type DemoFixture } from "./helpers";
 import { AppError } from "../src/lib/http";
+import { createStripeAdapter } from "../src/payments/stripe";
+import { resetConfigCache } from "../src/lib/config";
 
 describe("order flow", () => {
   let fx: DemoFixture;
@@ -41,6 +46,78 @@ describe("order flow", () => {
     assert.equal(order.supplier_org_id, fx.supplierBId);
     assert.equal(order.total_minor, 7800);
     assert.equal(order.stripe_payment_intent_id, null);
+    assert.equal(
+      Date.parse(order.approval_expires_at!) - Date.parse(order.created_at),
+      15 * 60_000,
+    );
+    assert.deepEqual(
+      fx.db
+        .prepare(
+          `SELECT buyer_org_id, currency, budget_window_start, budget_window_end,
+                  amount_minor, status
+           FROM budget_reservations WHERE order_id = ?`,
+        )
+        .get(order.id),
+      {
+        buyer_org_id: fx.buyerOrgId,
+        currency: "USD",
+        budget_window_start: fx.from,
+        budget_window_end: fx.until,
+        amount_minor: 7800,
+        status: "held",
+      },
+    );
+    assert.throws(
+      () =>
+        fx.db
+          .prepare(`UPDATE orders SET total_minor = total_minor + 1 WHERE id = ?`)
+          .run(order.id),
+      /order snapshots are immutable/,
+    );
+  });
+
+  it("keeps approval and denial paths independent of Stripe configuration", async () => {
+    process.env.STRIPE_SECRET_KEY = "";
+    resetConfigCache();
+    const stripe = createStripeAdapter();
+
+    const approval = await createOrder(
+      fx.db,
+      fx.buyerAgent,
+      {
+        product_key: "avocado",
+        unit: "case",
+        quantity: 2,
+        delivery_location_id: "kitchen-1",
+      },
+      randomUUID(),
+      "no-stripe-approval",
+      stripe,
+    );
+    assert.equal(approval.order.status, "awaiting_approval");
+
+    const denial = await createOrder(
+      fx.db,
+      fx.buyerAgent,
+      {
+        product_key: "avocado",
+        unit: "case",
+        quantity: 20,
+        delivery_location_id: "kitchen-1",
+      },
+      randomUUID(),
+      "no-stripe-denial",
+      stripe,
+    );
+    assert.equal(denial.order.status, "denied");
+    assert.equal(
+      (
+        fx.db
+          .prepare(`SELECT COUNT(*) AS n FROM budget_reservations WHERE order_id = ?`)
+          .get(denial.order.id) as { n: number }
+      ).n,
+      0,
+    );
   });
 
   it("approves, creates one PaymentIntent, and pays via webhook", async () => {
@@ -135,6 +212,176 @@ describe("order flow", () => {
         ),
       (err: unknown) => err instanceof AppError && err.code === "idempotency_conflict",
     );
+  });
+
+  it("serializes concurrent idempotent requests into one order and reservation", async () => {
+    const key = randomUUID();
+    const body = {
+      product_key: "avocado",
+      unit: "case",
+      quantity: 2,
+      delivery_location_id: "kitchen-1",
+    };
+    const [first, second] = await Promise.all([
+      createOrder(fx.db, fx.buyerAgent, body, key, "race-1", fx.stripe),
+      createOrder(fx.db, fx.buyerAgent, body, key, "race-2", fx.stripe),
+    ]);
+    assert.equal(first.order.id, second.order.id);
+    assert.equal(
+      (
+        fx.db
+          .prepare(`SELECT COUNT(*) AS n FROM orders WHERE idempotency_key = ?`)
+          .get(key) as { n: number }
+      ).n,
+      1,
+    );
+    assert.equal(
+      (
+        fx.db
+          .prepare(`SELECT COUNT(*) AS n FROM budget_reservations WHERE order_id = ?`)
+          .get(first.order.id) as { n: number }
+      ).n,
+      1,
+    );
+  });
+
+  it("rolls back order and audits when reservation persistence fails", async () => {
+    fx.db.exec(
+      `CREATE TRIGGER reject_budget_reservation
+       BEFORE INSERT ON budget_reservations
+       BEGIN
+         SELECT RAISE(ABORT, 'injected reservation failure');
+       END`,
+    );
+    const key = randomUUID();
+    await assert.rejects(
+      () =>
+        createOrder(
+          fx.db,
+          fx.buyerAgent,
+          {
+            product_key: "avocado",
+            unit: "case",
+            quantity: 2,
+            delivery_location_id: "kitchen-1",
+          },
+          key,
+          "atomic-1",
+          fx.stripe,
+        ),
+      /injected reservation failure/,
+    );
+    assert.equal(
+      (
+        fx.db
+          .prepare(`SELECT COUNT(*) AS n FROM orders WHERE idempotency_key = ?`)
+          .get(key) as { n: number }
+      ).n,
+      0,
+    );
+    assert.equal(
+      (
+        fx.db
+          .prepare(`SELECT COUNT(*) AS n FROM audit_events WHERE request_id = 'atomic-1'`)
+          .get() as { n: number }
+      ).n,
+      0,
+    );
+  });
+
+  it("shares budget identity across mandate versions and isolates other windows", async () => {
+    await createOrder(
+      fx.db,
+      fx.buyerAgent,
+      {
+        product_key: "avocado",
+        unit: "case",
+        quantity: 1,
+        delivery_location_id: "kitchen-1",
+      },
+      randomUUID(),
+      "budget-1",
+      fx.stripe,
+    );
+    createMandateVersion(
+      fx.db,
+      fx.human,
+      {
+        currency: "USD",
+        autonomous_order_limit_minor: 50_000,
+        hard_exception_limit_minor: 50_000,
+        budget_window_start: fx.from,
+        budget_window_end: fx.until,
+        budget_limit_minor: 5000,
+        allowed_supplier_org_ids: [fx.supplierAId, fx.supplierBId],
+        allowed_categories: ["produce"],
+        allowed_delivery_location_ids: ["kitchen-1"],
+        valid_from: fx.from,
+        valid_until: fx.until,
+      },
+      "budget-2",
+    );
+    const second = await createOrder(
+      fx.db,
+      fx.buyerAgent,
+      {
+        product_key: "avocado",
+        unit: "case",
+        quantity: 1,
+        delivery_location_id: "kitchen-1",
+      },
+      randomUUID(),
+      "budget-3",
+      fx.stripe,
+    );
+    assert.equal(second.order.status, "awaiting_approval");
+    assert.deepEqual(JSON.parse(second.order.policy_reasons_json), [
+      "above_period_budget",
+    ]);
+    assert.equal(
+      committedSpendMinor(
+        fx.db,
+        fx.buyerOrgId,
+        "USD",
+        new Date(Date.parse(fx.until) + 1000).toISOString(),
+        new Date(Date.parse(fx.until) + 86_401_000).toISOString(),
+      ),
+      0,
+    );
+  });
+
+  it("scopes reads and keeps the supplier projection fulfillment-only", async () => {
+    const { order } = await createOrder(
+      fx.db,
+      fx.buyerAgent,
+      {
+        product_key: "avocado",
+        unit: "case",
+        quantity: 2,
+        delivery_location_id: "kitchen-1",
+      },
+      randomUUID(),
+      "read-1",
+      fx.stripe,
+    );
+    assert.equal(getOrderForActor(fx.db, fx.buyerAgent, order.id).id, order.id);
+    assert.throws(
+      () => getOrderForActor(fx.db, fx.supplierAgent, order.id),
+      (error: unknown) => error instanceof AppError && error.code === "not_found",
+    );
+    const supplier = {
+      ...fx.supplierAgent,
+      organizationId: fx.supplierBId,
+      auth0OrgId: "org_supplier_b",
+    };
+    const projection = serializeOrder(
+      getOrderForActor(fx.db, supplier, order.id),
+      "supplier",
+    );
+    assert.equal(projection.id, order.id);
+    assert.equal("buyer_org_id" in projection, false);
+    assert.equal("policy_decision" in projection, false);
+    assert.equal("total_minor" in projection, false);
   });
 
   it("marks waiting orders stale when offer changes", async () => {
@@ -275,12 +522,8 @@ describe("order flow", () => {
   });
 
   it("expires approvals and abandons failed payments", async () => {
-    process.env.APPROVAL_TTL_SECONDS = "1";
-    const { resetConfigCache } = await import("../src/lib/config");
-    resetConfigCache();
     fx = setupFixture(`expire-${randomUUID()}`);
 
-    // force expiry in the past
     const { order } = await createOrder(
       fx.db,
       fx.buyerAgent,
@@ -294,11 +537,11 @@ describe("order flow", () => {
       "exp-1",
       fx.stripe,
     );
-    fx.db
-      .prepare(`UPDATE orders SET approval_expires_at = ? WHERE id = ?`)
-      .run(new Date(Date.now() - 1000).toISOString(), order.id);
-
-    const n = expireApprovals(fx.db, "exp-2");
+    const n = expireApprovals(
+      fx.db,
+      "exp-2",
+      new Date(Date.parse(order.created_at) + 16 * 60_000).toISOString(),
+    );
     assert.equal(n, 1);
 
     // autonomous allow path then force failure abandonment

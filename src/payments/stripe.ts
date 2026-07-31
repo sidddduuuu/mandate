@@ -42,14 +42,17 @@ function mapIntent(pi: Stripe.PaymentIntent): PaymentIntentState {
 
 export function createStripeAdapter(): StripeAdapter {
   const cfg = getConfig();
-  if (!cfg.STRIPE_SECRET_KEY) {
-    throw new AppError(500, "stripe_misconfigured", "STRIPE_SECRET_KEY is not configured");
-  }
-  const stripe = new Stripe(cfg.STRIPE_SECRET_KEY);
+  let stripe: Stripe | undefined;
+  const getStripe = (requireApiKey = true) => {
+    if (requireApiKey && !cfg.STRIPE_SECRET_KEY) {
+      throw new AppError(500, "stripe_misconfigured", "STRIPE_SECRET_KEY is not configured");
+    }
+    return (stripe ??= new Stripe(cfg.STRIPE_SECRET_KEY ?? "sk_webhook_verification_only"));
+  };
 
   return {
     async createPaymentIntent(input) {
-      const pi = await stripe.paymentIntents.create(
+      const pi = await getStripe().paymentIntents.create(
         {
           amount: input.amountMinor,
           currency: input.currency.toLowerCase(),
@@ -63,7 +66,7 @@ export function createStripeAdapter(): StripeAdapter {
       return mapIntent(pi);
     },
     async confirmPaymentIntent(input) {
-      const pi = await stripe.paymentIntents.confirm(
+      const pi = await getStripe().paymentIntents.confirm(
         input.paymentIntentId,
         { payment_method: input.paymentMethod },
         { idempotencyKey: input.idempotencyKey },
@@ -71,10 +74,10 @@ export function createStripeAdapter(): StripeAdapter {
       return mapIntent(pi);
     },
     async retrievePaymentIntent(paymentIntentId) {
-      return mapIntent(await stripe.paymentIntents.retrieve(paymentIntentId));
+      return mapIntent(await getStripe().paymentIntents.retrieve(paymentIntentId));
     },
     async cancelPaymentIntent(paymentIntentId, idempotencyKey) {
-      const pi = await stripe.paymentIntents.cancel(
+      const pi = await getStripe().paymentIntents.cancel(
         paymentIntentId,
         {},
         { idempotencyKey },
@@ -86,7 +89,7 @@ export function createStripeAdapter(): StripeAdapter {
       if (!secret) {
         throw new AppError(500, "stripe_misconfigured", "STRIPE_WEBHOOK_SECRET is not configured");
       }
-      return stripe.webhooks.constructEvent(rawBody, signature, secret);
+      return getStripe(false).webhooks.constructEvent(rawBody, signature, secret);
     },
   };
 }

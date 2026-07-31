@@ -105,6 +105,45 @@ describe("evaluatePolicy", () => {
     );
     assert.equal(evaluatePolicy(baseInput({ quantity: 0 })).decision, "deny");
   });
+
+  it("returns stable hard-denial reason codes at validity boundaries", () => {
+    const base = baseInput();
+    const cases: [Partial<PolicyEvaluationInput>, string][] = [
+      [{ actorBuyerOrgId: "other" }, "tenant_mismatch"],
+      [{ quantity: Number.MAX_SAFE_INTEGER + 1 }, "malformed_quantity"],
+      [
+        {
+          mandate: {
+            ...base.mandate!,
+            valid_until: base.nowIso,
+          },
+        },
+        "mandate_expired",
+      ],
+      [
+        {
+          mandate: {
+            ...base.mandate!,
+            budget_window_end: base.nowIso,
+          },
+        },
+        "inactive_budget_window",
+      ],
+      [{ offer: { ...base.offer, active: false } }, "inactive_offer"],
+      [{ offer: { ...base.offer, expired: true } }, "stale_offer"],
+      [{ offer: { ...base.offer, currency: "EUR" } }, "currency_mismatch"],
+      [{ offer: { ...base.offer, supplierOrgId: "other" } }, "supplier_not_allowed"],
+      [{ offer: { ...base.offer, category: "dairy" } }, "category_not_allowed"],
+      [{ deliveryLocationId: "other" }, "delivery_not_allowed"],
+      [{ totalMinor: 20_001 }, "above_hard_exception_limit"],
+    ];
+    for (const [overrides, reason] of cases) {
+      assert.deepEqual(evaluatePolicy(baseInput(overrides)), {
+        decision: "deny",
+        reasons: [reason],
+      });
+    }
+  });
 });
 
 describe("computeOrderTotalMinor", () => {

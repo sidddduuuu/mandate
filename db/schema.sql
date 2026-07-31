@@ -84,6 +84,9 @@ CREATE TABLE IF NOT EXISTS orders (
   currency TEXT NOT NULL CHECK (length(currency) = 3),
   total_minor INTEGER NOT NULL CHECK (total_minor > 0),
   delivery_location_id TEXT NOT NULL,
+  budget_window_start TEXT NOT NULL,
+  budget_window_end TEXT NOT NULL,
+  budget_limit_minor INTEGER NOT NULL CHECK (budget_limit_minor > 0),
   status TEXT NOT NULL CHECK (status IN (
     'denied',
     'awaiting_approval',
@@ -113,6 +116,61 @@ CREATE TABLE IF NOT EXISTS orders (
 CREATE INDEX IF NOT EXISTS orders_buyer_status_idx ON orders(buyer_org_id, status);
 CREATE INDEX IF NOT EXISTS orders_supplier_idx ON orders(supplier_org_id, status);
 CREATE INDEX IF NOT EXISTS orders_approval_queue_idx ON orders(buyer_org_id, status, approval_expires_at);
+
+CREATE TRIGGER IF NOT EXISTS orders_immutable_snapshot
+BEFORE UPDATE ON orders
+WHEN
+  NEW.id IS NOT OLD.id OR
+  NEW.buyer_org_id IS NOT OLD.buyer_org_id OR
+  NEW.supplier_org_id IS NOT OLD.supplier_org_id OR
+  NEW.requester_subject IS NOT OLD.requester_subject OR
+  NEW.mandate_id IS NOT OLD.mandate_id OR
+  NEW.mandate_version IS NOT OLD.mandate_version OR
+  NEW.mandate_policy_hash IS NOT OLD.mandate_policy_hash OR
+  NEW.catalog_item_id IS NOT OLD.catalog_item_id OR
+  NEW.catalog_version IS NOT OLD.catalog_version OR
+  NEW.sku IS NOT OLD.sku OR
+  NEW.product_key IS NOT OLD.product_key OR
+  NEW.category IS NOT OLD.category OR
+  NEW.unit IS NOT OLD.unit OR
+  NEW.unit_price_minor IS NOT OLD.unit_price_minor OR
+  NEW.quantity IS NOT OLD.quantity OR
+  NEW.currency IS NOT OLD.currency OR
+  NEW.total_minor IS NOT OLD.total_minor OR
+  NEW.delivery_location_id IS NOT OLD.delivery_location_id OR
+  NEW.budget_window_start IS NOT OLD.budget_window_start OR
+  NEW.budget_window_end IS NOT OLD.budget_window_end OR
+  NEW.budget_limit_minor IS NOT OLD.budget_limit_minor OR
+  NEW.policy_decision IS NOT OLD.policy_decision OR
+  NEW.policy_reasons_json IS NOT OLD.policy_reasons_json OR
+  NEW.idempotency_key IS NOT OLD.idempotency_key OR
+  NEW.request_hash IS NOT OLD.request_hash OR
+  NEW.approval_expires_at IS NOT OLD.approval_expires_at OR
+  NEW.created_at IS NOT OLD.created_at
+BEGIN
+  SELECT RAISE(ABORT, 'order snapshots are immutable');
+END;
+
+CREATE TABLE IF NOT EXISTS budget_reservations (
+  order_id TEXT PRIMARY KEY REFERENCES orders(id),
+  buyer_org_id TEXT NOT NULL REFERENCES organizations(id),
+  currency TEXT NOT NULL CHECK (length(currency) = 3),
+  budget_window_start TEXT NOT NULL,
+  budget_window_end TEXT NOT NULL,
+  amount_minor INTEGER NOT NULL CHECK (amount_minor > 0),
+  status TEXT NOT NULL CHECK (status IN ('held', 'released', 'consumed')),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS budget_reservations_window_idx
+  ON budget_reservations(
+    buyer_org_id,
+    currency,
+    budget_window_start,
+    budget_window_end,
+    status
+  );
 
 CREATE TABLE IF NOT EXISTS stripe_events (
   id TEXT PRIMARY KEY,
