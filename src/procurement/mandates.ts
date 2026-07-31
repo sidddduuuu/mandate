@@ -10,6 +10,7 @@ import {
   policySchemaVersion,
   type MandatePolicy,
 } from "./policy";
+import { releaseBudgetReservation } from "./reservations";
 
 export type MandateRow = {
   id: string;
@@ -137,6 +138,14 @@ export function createMandateVersion(
 
     // Stale awaiting approvals bound to superseded mandate.
     if (current) {
+      const staleOrders = db
+        .prepare(
+          `SELECT id FROM orders
+           WHERE buyer_org_id = ?
+             AND status = 'awaiting_approval'
+             AND mandate_id = ?`,
+        )
+        .all(actor.organizationId, current.id) as { id: string }[];
       db.prepare(
         `UPDATE orders
          SET status = 'stale', updated_at = ?
@@ -144,6 +153,30 @@ export function createMandateVersion(
            AND status = 'awaiting_approval'
            AND mandate_id = ?`,
       ).run(now, actor.organizationId, current.id);
+      for (const order of staleOrders) {
+        releaseBudgetReservation(db, {
+          orderId: order.id,
+          buyerOrgId: actor.organizationId,
+          reason: "mandate_superseded",
+          requestId,
+          actorType: "human",
+          actorSubject: actor.subject,
+        });
+        writeAudit(db, {
+          aggregateType: "order",
+          aggregateId: order.id,
+          organizationId: actor.organizationId,
+          eventType: "order.transition",
+          actorType: "human",
+          actorSubject: actor.subject,
+          requestId,
+          payload: {
+            from: "awaiting_approval",
+            to: "stale",
+            reason: "mandate_superseded",
+          },
+        });
+      }
     }
 
     const row = db.prepare(`SELECT * FROM mandates WHERE id = ?`).get(id) as MandateRow;
@@ -177,11 +210,43 @@ export function revokeActiveMandate(
     if (!current) throw new AppError(404, "not_found", "No active mandate");
 
     db.prepare(`UPDATE mandates SET status = 'revoked' WHERE id = ?`).run(current.id);
+    const staleOrders = db
+      .prepare(
+        `SELECT id FROM orders
+         WHERE buyer_org_id = ?
+           AND status = 'awaiting_approval'
+           AND mandate_id = ?`,
+      )
+      .all(actor.organizationId, current.id) as { id: string }[];
     db.prepare(
       `UPDATE orders
        SET status = 'stale', updated_at = ?
        WHERE buyer_org_id = ? AND status = 'awaiting_approval' AND mandate_id = ?`,
     ).run(now, actor.organizationId, current.id);
+    for (const order of staleOrders) {
+      releaseBudgetReservation(db, {
+        orderId: order.id,
+        buyerOrgId: actor.organizationId,
+        reason: "mandate_revoked",
+        requestId,
+        actorType: "human",
+        actorSubject: actor.subject,
+      });
+      writeAudit(db, {
+        aggregateType: "order",
+        aggregateId: order.id,
+        organizationId: actor.organizationId,
+        eventType: "order.transition",
+        actorType: "human",
+        actorSubject: actor.subject,
+        requestId,
+        payload: {
+          from: "awaiting_approval",
+          to: "stale",
+          reason: "mandate_revoked",
+        },
+      });
+    }
 
     writeAudit(db, {
       aggregateType: "mandate",

@@ -5,13 +5,19 @@ import { SignJWT } from "jose";
 import { closeDb } from "../src/db";
 import { resetConfigCache } from "../src/lib/config";
 import { resetAuth0Client, setAuth0ClientForTests } from "../src/lib/auth0";
-import { authenticateRequest } from "../src/auth/context";
+import {
+  authenticateRequest,
+  encodeSessionCookie,
+} from "../src/auth/context";
 import {
   createOrder,
   decideApproval,
   handleStripeWebhook,
 } from "../src/procurement/orders";
 import { setupFixture, type DemoFixture } from "./helpers";
+import { GET as listApprovalRoute } from "../src/app/api/approvals/route";
+import { POST as decideApprovalRoute } from "../src/app/api/orders/[id]/approval/route";
+import { setStripeOverride } from "../src/lib/api";
 
 describe("Auth0 session + Stripe payment integration", () => {
   let fx: DemoFixture;
@@ -24,6 +30,7 @@ describe("Auth0 session + Stripe payment integration", () => {
   });
 
   afterEach(() => {
+    setStripeOverride(null);
     setAuth0ClientForTests(undefined);
     resetAuth0Client();
   });
@@ -196,5 +203,101 @@ describe("Auth0 session + Stripe payment integration", () => {
     assert.equal(order.status, "denied");
     assert.equal(order.stripe_payment_intent_id, null);
     assert.equal(fx.stripe.intents.size, 0);
+  });
+
+  it("enforces approval tenant, permission, and CSRF boundaries at the routes", async () => {
+    setAuth0ClientForTests(null);
+    setStripeOverride(fx.stripe);
+    const { order } = await createOrder(
+      fx.db,
+      fx.buyerAgent,
+      {
+        product_key: "avocado",
+        unit: "case",
+        quantity: 2,
+        delivery_location_id: "kitchen-1",
+      },
+      randomUUID(),
+      "approval-route-order",
+      fx.stripe,
+    );
+    const cookie = (orgId: string, permissions: string[]) =>
+      `mandate_session=${encodeSessionCookie({
+        sub: "human-route-approver",
+        org_id: orgId,
+        permissions,
+        exp: Math.floor(Date.now() / 1000) + 300,
+      })}`;
+
+    const buyerList = await listApprovalRoute(
+      new Request("http://localhost/api/approvals", {
+        headers: { cookie: cookie("org_buyer", ["approvals:read"]) },
+      }),
+    );
+    assert.equal(buyerList.status, 200);
+    const buyerBody = (await buyerList.json()) as {
+      data: { approvals: { id: string }[] };
+    };
+    assert.deepEqual(
+      buyerBody.data.approvals.map((approval) => approval.id),
+      [order.id],
+    );
+
+    const otherList = await listApprovalRoute(
+      new Request("http://localhost/api/approvals", {
+        headers: { cookie: cookie("org_supplier_a", ["approvals:read"]) },
+      }),
+    );
+    assert.deepEqual(
+      ((await otherList.json()) as { data: { approvals: unknown[] } }).data
+        .approvals,
+      [],
+    );
+
+    const context = { params: Promise.resolve({ id: order.id }) };
+    const noCsrf = await decideApprovalRoute(
+      new Request(`http://localhost/api/orders/${order.id}/approval`, {
+        method: "POST",
+        headers: {
+          cookie: cookie("org_buyer", ["approvals:decide"]),
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ decision: "approve" }),
+      }),
+      context,
+    );
+    assert.equal(noCsrf.status, 403);
+
+    const noPermission = await decideApprovalRoute(
+      new Request(`http://localhost/api/orders/${order.id}/approval`, {
+        method: "POST",
+        headers: {
+          cookie: cookie("org_buyer", ["approvals:read"]),
+          "content-type": "application/json",
+          "x-csrf-token": "mandate",
+        },
+        body: JSON.stringify({ decision: "approve" }),
+      }),
+      context,
+    );
+    assert.equal(noPermission.status, 403);
+
+    const approved = await decideApprovalRoute(
+      new Request(`http://localhost/api/orders/${order.id}/approval`, {
+        method: "POST",
+        headers: {
+          cookie: cookie("org_buyer", ["approvals:decide"]),
+          "content-type": "application/json",
+          "x-csrf-token": "mandate",
+        },
+        body: JSON.stringify({ decision: "approve" }),
+      }),
+      context,
+    );
+    assert.equal(approved.status, 200);
+    assert.equal(
+      ((await approved.json()) as { data: { status: string } }).data.status,
+      "payment_pending",
+    );
   });
 });

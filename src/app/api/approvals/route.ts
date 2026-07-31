@@ -8,7 +8,7 @@ export async function GET(request: Request): Promise<Response> {
   return withApi(
     request,
     async ({ db, actor, requestId }) => {
-      const orders = listApprovals(db, actor.organizationId);
+      const orders = listApprovals(db, actor.organizationId, requestId);
       return jsonOk(
         { approvals: orders.map((o) => serializeOrder(o, "buyer")) },
         { requestId },

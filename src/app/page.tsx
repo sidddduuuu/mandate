@@ -31,6 +31,8 @@ export default async function HomePage() {
             <p>
               <a href="/api/session">View Mandate actor (/api/session)</a>
               {" · "}
+              <a href="/approvals">Open approval queue</a>
+              {" · "}
               <a href="/auth/logout">Log out</a>
             </p>
           </div>

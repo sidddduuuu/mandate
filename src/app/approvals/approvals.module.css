@@ -1,0 +1,157 @@
+.shell {
+  max-width: 72rem;
+  margin: 0 auto;
+  padding: 3rem 1.25rem 5rem;
+  color: #172033;
+  font-family: ui-sans-serif, system-ui, sans-serif;
+}
+
+.header,
+.cardHeader,
+.actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.header {
+  margin-bottom: 2rem;
+}
+
+.header h1,
+.card h2 {
+  margin: 0;
+}
+
+.eyebrow,
+.status {
+  margin: 0 0 0.35rem;
+  color: #3159b8;
+  font-size: 0.78rem;
+  font-weight: 750;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.notice,
+.empty,
+.card {
+  border: 1px solid #cbd4e5;
+  border-radius: 0.75rem;
+  background: #fff;
+}
+
+.notice,
+.empty {
+  padding: 1rem 1.25rem;
+}
+
+.notice {
+  border-color: #8ca8e8;
+  background: #eef3ff;
+}
+
+.primaryLink {
+  display: inline-block;
+  padding: 0.7rem 1rem;
+  border-radius: 0.4rem;
+  background: #183f9b;
+  color: #fff;
+}
+
+.queue {
+  display: grid;
+  gap: 1rem;
+  padding: 0;
+  list-style: none;
+}
+
+.card {
+  padding: 1.25rem;
+  box-shadow: 0 0.25rem 1rem rgb(23 32 51 / 8%);
+}
+
+.amount {
+  margin: 0;
+  font-weight: 750;
+}
+
+.muted {
+  color: #526078;
+}
+
+.facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
+  gap: 1rem;
+  margin: 1.25rem 0;
+  padding: 1rem 0;
+  border-block: 1px solid #d8dfeb;
+}
+
+.facts dt {
+  color: #526078;
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+
+.facts dd {
+  margin: 0.3rem 0 0;
+  overflow-wrap: anywhere;
+}
+
+.form {
+  display: grid;
+  gap: 0.6rem;
+}
+
+.form label {
+  font-weight: 700;
+}
+
+.form textarea {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 0.7rem;
+  border: 1px solid #8592a8;
+  border-radius: 0.4rem;
+  color: inherit;
+  font: inherit;
+}
+
+.actions {
+  justify-content: flex-start;
+}
+
+.actions button {
+  padding: 0.7rem 1rem;
+  border: 2px solid #183f9b;
+  border-radius: 0.4rem;
+  background: #183f9b;
+  color: #fff;
+  font: inherit;
+  font-weight: 750;
+  cursor: pointer;
+}
+
+.actions .secondary {
+  background: #fff;
+  color: #183f9b;
+}
+
+.actions button:focus-visible,
+.form textarea:focus-visible,
+.header a:focus-visible,
+.primaryLink:focus-visible {
+  outline: 3px solid #f2a900;
+  outline-offset: 3px;
+}
+
+@media (max-width: 40rem) {
+  .header,
+  .cardHeader {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}

@@ -12,6 +12,7 @@ import { computeOrderTotalMinor, MoneyError } from "../lib/money";
 import type { PaymentIntentState, StripeAdapter } from "../payments/stripe";
 import { getActiveMandate, mandateToPolicy, type MandateRow } from "./mandates";
 import { evaluatePolicy } from "./policy";
+import { releaseBudgetReservation } from "./reservations";
 
 export type OrderStatus =
   | "denied"
@@ -188,13 +189,18 @@ export function isOfferStillValidForOrder(
     .prepare(`SELECT * FROM catalog_items WHERE id = ?`)
     .get(order.catalog_item_id) as CatalogItemRow | undefined;
   if (!item) return false;
+  if (item.supplier_org_id !== order.supplier_org_id) return false;
+  if (item.sku !== order.sku) return false;
+  if (item.product_key !== order.product_key) return false;
+  if (item.category !== order.category) return false;
+  if (item.unit !== order.unit) return false;
   if (item.version !== order.catalog_version) return false;
   if (item.active !== 1) return false;
   if (item.unit_price_minor !== order.unit_price_minor) return false;
   if (item.currency !== order.currency) return false;
   if (item.advisory_quantity < order.quantity) return false;
   if (Date.parse(item.valid_from) > Date.parse(now)) return false;
-  if (Date.parse(item.valid_until) < Date.parse(now)) return false;
+  if (Date.parse(item.valid_until) <= Date.parse(now)) return false;
   return true;
 }
 
@@ -1001,30 +1007,82 @@ export async function decideApproval(
   requestId: string,
   stripe: StripeAdapter,
 ): Promise<OrderRow> {
+  if (
+    actor.actorType !== "human" ||
+    !actor.permissions.has("approvals:decide")
+  ) {
+    throw new AppError(403, "forbidden", "Approval decision permission required");
+  }
   const body = z
     .object({
       decision: z.enum(["approve", "reject"]),
       reason: z.string().max(500).optional(),
     })
+    .strict()
     .safeParse(rawBody);
   if (!body.success) {
     throw new AppError(400, "invalid_request", "Invalid approval payload");
   }
 
   const now = nowIso();
-  let order = withImmediateTransaction(db, () => {
+  const outcome = withImmediateTransaction(
+    db,
+    (): { order?: OrderRow; error?: AppError } => {
     const current = getOrder(db, orderId);
     if (!current || current.buyer_org_id !== actor.organizationId) {
-      throw new AppError(404, "not_found", "Order not found");
+      return {
+        error: new AppError(404, "not_found", "Order not found"),
+      };
+    }
+    if (current.status === "expired") {
+      return {
+        error: new AppError(
+          409,
+          "approval_expired",
+          "Approval window has expired",
+        ),
+      };
     }
     if (current.status !== "awaiting_approval") {
-      throw new AppError(409, "conflict", "Order is not awaiting approval");
+      return {
+        error: new AppError(
+          409,
+          "approval_already_decided",
+          "Order is not awaiting approval",
+        ),
+      };
     }
     if (current.requester_subject === actor.subject) {
-      throw new AppError(403, "forbidden", "Requester cannot approve their own order");
+      writeAudit(db, {
+        aggregateType: "order",
+        aggregateId: current.id,
+        organizationId: current.buyer_org_id,
+        eventType: "order.approval_denied",
+        actorType: "human",
+        actorSubject: actor.subject,
+        requestId,
+        payload: { reason: "requester_self_approval" },
+      });
+      return {
+        error: new AppError(
+          403,
+          "requester_self_approval",
+          "Requester cannot decide their own order",
+        ),
+      };
     }
-    if (current.approval_expires_at && Date.parse(current.approval_expires_at) <= Date.parse(now)) {
+    if (
+      current.approval_expires_at &&
+      Date.parse(current.approval_expires_at) <= Date.parse(now)
+    ) {
       transitionOrder(db, current.id, ["awaiting_approval"], "expired");
+      releaseBudgetReservation(db, {
+        orderId: current.id,
+        buyerOrgId: current.buyer_org_id,
+        reason: "approval_expired",
+        requestId,
+        actorType: "system",
+      });
       writeAudit(db, {
         aggregateType: "order",
         aggregateId: current.id,
@@ -1032,33 +1090,36 @@ export async function decideApproval(
         eventType: "order.transition",
         actorType: "system",
         requestId,
-        payload: { to: "expired" },
+        payload: { from: "awaiting_approval", to: "expired" },
       });
-      throw new AppError(409, "approval_expired", "Approval window has expired");
-    }
-
-    const mandate = db
-      .prepare(`SELECT * FROM mandates WHERE id = ?`)
-      .get(current.mandate_id) as MandateRow | undefined;
-    if (!mandate || mandate.status !== "active" || mandate.policy_hash !== current.mandate_policy_hash) {
-      transitionOrder(db, current.id, ["awaiting_approval"], "stale");
-      writeAudit(db, {
-        aggregateType: "order",
-        aggregateId: current.id,
-        organizationId: current.buyer_org_id,
-        eventType: "order.transition",
-        actorType: "system",
-        requestId,
-        payload: { to: "stale", reason: "mandate_invalid" },
-      });
-      throw new AppError(409, "stale_order", "Mandate no longer valid for this order");
+      return {
+        error: new AppError(
+          409,
+          "approval_expired",
+          "Approval window has expired",
+        ),
+      };
     }
 
     if (body.data.decision === "reject") {
-      const rejected = transitionOrder(db, current.id, ["awaiting_approval"], "rejected", {
-        approval_actor_subject: actor.subject,
-        approval_decided_at: now,
-        approval_reason: body.data.reason ?? null,
+      const rejected = transitionOrder(
+        db,
+        current.id,
+        ["awaiting_approval"],
+        "rejected",
+        {
+          approval_actor_subject: actor.subject,
+          approval_decided_at: now,
+          approval_reason: body.data.reason ?? null,
+        },
+      );
+      releaseBudgetReservation(db, {
+        orderId: current.id,
+        buyerOrgId: current.buyer_org_id,
+        reason: "approval_rejected",
+        requestId,
+        actorType: "human",
+        actorSubject: actor.subject,
       });
       writeAudit(db, {
         aggregateType: "order",
@@ -1070,11 +1131,39 @@ export async function decideApproval(
         requestId,
         payload: { reason: body.data.reason ?? null },
       });
-      return rejected;
+      return { order: rejected };
     }
 
-    if (!isOfferStillValidForOrder(db, current, now)) {
+    const mandate = db
+      .prepare(`SELECT * FROM mandates WHERE id = ?`)
+      .get(current.mandate_id) as MandateRow | undefined;
+    const mandateInvalid =
+      !mandate ||
+      mandate.status !== "active" ||
+      mandate.buyer_org_id !== current.buyer_org_id ||
+      mandate.policy_hash !== current.mandate_policy_hash ||
+      mandate.version !== current.mandate_version ||
+      Date.parse(now) < Date.parse(mandate.valid_from) ||
+      Date.parse(now) >= Date.parse(mandate.valid_until) ||
+      Date.parse(now) < Date.parse(mandate.budget_window_start) ||
+      Date.parse(now) >= Date.parse(mandate.budget_window_end) ||
+      mandate.currency !== current.currency ||
+      !JSON.parse(mandate.allowed_supplier_org_ids_json).includes(
+        current.supplier_org_id,
+      ) ||
+      !JSON.parse(mandate.allowed_categories_json).includes(current.category) ||
+      !JSON.parse(mandate.allowed_delivery_location_ids_json).includes(
+        current.delivery_location_id,
+      );
+    if (mandateInvalid) {
       transitionOrder(db, current.id, ["awaiting_approval"], "stale");
+      releaseBudgetReservation(db, {
+        orderId: current.id,
+        buyerOrgId: current.buyer_org_id,
+        reason: "mandate_stale",
+        requestId,
+        actorType: "system",
+      });
       writeAudit(db, {
         aggregateType: "order",
         aggregateId: current.id,
@@ -1082,9 +1171,50 @@ export async function decideApproval(
         eventType: "order.transition",
         actorType: "system",
         requestId,
-        payload: { to: "stale", reason: "offer_changed" },
+        payload: {
+          from: "awaiting_approval",
+          to: "stale",
+          reason: "mandate_stale",
+        },
       });
-      throw new AppError(409, "stale_order", "Offer changed while awaiting approval");
+      return {
+        error: new AppError(
+          409,
+          "mandate_stale",
+          "Mandate no longer authorizes this order",
+        ),
+      };
+    }
+
+    if (!isOfferStillValidForOrder(db, current, now)) {
+      transitionOrder(db, current.id, ["awaiting_approval"], "stale");
+      releaseBudgetReservation(db, {
+        orderId: current.id,
+        buyerOrgId: current.buyer_org_id,
+        reason: "offer_stale",
+        requestId,
+        actorType: "system",
+      });
+      writeAudit(db, {
+        aggregateType: "order",
+        aggregateId: current.id,
+        organizationId: current.buyer_org_id,
+        eventType: "order.transition",
+        actorType: "system",
+        requestId,
+        payload: {
+          from: "awaiting_approval",
+          to: "stale",
+          reason: "offer_stale",
+        },
+      });
+      return {
+        error: new AppError(
+          409,
+          "offer_stale",
+          "Offer changed while awaiting approval",
+        ),
+      };
     }
 
     const approved = transitionOrder(db, current.id, ["awaiting_approval"], "payment_pending", {
@@ -1102,9 +1232,12 @@ export async function decideApproval(
       requestId,
       payload: { reason: body.data.reason ?? null },
     });
-    return approved;
-  });
+    return { order: approved };
+    },
+  );
 
+  if (outcome.error) throw outcome.error;
+  let order = outcome.order!;
   if (order.status === "payment_pending") {
     await initiatePayment(db, order, requestId, stripe);
     order = getOrder(db, order.id)!;
@@ -1112,14 +1245,59 @@ export async function decideApproval(
   return order;
 }
 
-export function listApprovals(db: Db, buyerOrgId: string): OrderRow[] {
-  return db
+function materializeExpiredApprovals(
+  db: Db,
+  buyerOrgId: string | null,
+  requestId: string,
+  now: string,
+): number {
+  const due = db
     .prepare(
       `SELECT * FROM orders
-       WHERE buyer_org_id = ? AND status = 'awaiting_approval'
-       ORDER BY created_at ASC`,
+       WHERE status = 'awaiting_approval'
+         AND approval_expires_at IS NOT NULL
+         AND approval_expires_at <= ?
+         AND (? IS NULL OR buyer_org_id = ?)`,
     )
-    .all(buyerOrgId) as OrderRow[];
+    .all(now, buyerOrgId, buyerOrgId) as OrderRow[];
+  for (const order of due) {
+    transitionOrder(db, order.id, ["awaiting_approval"], "expired");
+    releaseBudgetReservation(db, {
+      orderId: order.id,
+      buyerOrgId: order.buyer_org_id,
+      reason: "approval_expired",
+      requestId,
+      actorType: "system",
+    });
+    writeAudit(db, {
+      aggregateType: "order",
+      aggregateId: order.id,
+      organizationId: order.buyer_org_id,
+      eventType: "order.transition",
+      actorType: "system",
+      requestId,
+      payload: { from: "awaiting_approval", to: "expired" },
+    });
+  }
+  return due.length;
+}
+
+export function listApprovals(
+  db: Db,
+  buyerOrgId: string,
+  requestId: string,
+  now = nowIso(),
+): OrderRow[] {
+  return withImmediateTransaction(db, () => {
+    materializeExpiredApprovals(db, buyerOrgId, requestId, now);
+    return db
+      .prepare(
+        `SELECT * FROM orders
+         WHERE buyer_org_id = ? AND status = 'awaiting_approval'
+         ORDER BY approval_expires_at ASC, created_at ASC, id ASC`,
+      )
+      .all(buyerOrgId) as OrderRow[];
+  });
 }
 
 export function getOrderForActor(db: Db, actor: ActorContext, orderId: string): OrderRow {
@@ -1345,26 +1523,7 @@ export function expireApprovals(
   requestId: string,
   now = nowIso(),
 ): number {
-  return withImmediateTransaction(db, () => {
-    const due = db
-      .prepare(
-        `SELECT id FROM orders
-         WHERE status = 'awaiting_approval'
-           AND approval_expires_at IS NOT NULL
-           AND approval_expires_at <= ?`,
-      )
-      .all(now) as { id: string }[];
-    for (const row of due) {
-      transitionOrder(db, row.id, ["awaiting_approval"], "expired");
-      writeAudit(db, {
-        aggregateType: "order",
-        aggregateId: row.id,
-        eventType: "order.transition",
-        actorType: "system",
-        requestId,
-        payload: { to: "expired" },
-      });
-    }
-    return due.length;
-  });
+  return withImmediateTransaction(db, () =>
+    materializeExpiredApprovals(db, null, requestId, now),
+  );
 }

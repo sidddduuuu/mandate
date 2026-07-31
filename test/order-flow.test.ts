@@ -10,6 +10,7 @@ import {
   decideApproval,
   getOrderForActor,
   handleStripeWebhook,
+  listApprovals,
   abandonFailedPayment,
   expireApprovals,
   serializeOrder,
@@ -721,8 +722,19 @@ describe("order flow", () => {
           "stale-2",
           fx.stripe,
         ),
-      (err: unknown) => err instanceof AppError && err.code === "stale_order",
+      (err: unknown) => err instanceof AppError && err.code === "offer_stale",
     );
+    assert.deepEqual(
+      fx.db
+        .prepare(
+          `SELECT o.status AS order_status, r.status AS reservation_status
+           FROM orders o JOIN budget_reservations r ON r.order_id = o.id
+           WHERE o.id = ?`,
+        )
+        .get(order.id),
+      { order_status: "stale", reservation_status: "released" },
+    );
+    assert.equal(fx.stripe.createAttempts.length, 0);
   });
 
   it("superseding mandate stales awaiting approvals", async () => {
@@ -763,6 +775,14 @@ describe("order flow", () => {
       status: string;
     };
     assert.equal(row.status, "stale");
+    assert.equal(
+      (
+        fx.db
+          .prepare(`SELECT status FROM budget_reservations WHERE order_id = ?`)
+          .get(order.id) as { status: string }
+      ).status,
+      "released",
+    );
   });
 
   it("denies hard exceptions and never creates PaymentIntent", async () => {
@@ -806,6 +826,14 @@ describe("order flow", () => {
       new Date(Date.parse(order.created_at) + 16 * 60_000).toISOString(),
     );
     assert.equal(n, 1);
+    assert.equal(
+      (
+        fx.db
+          .prepare(`SELECT status FROM budget_reservations WHERE order_id = ?`)
+          .get(order.id) as { status: string }
+      ).status,
+      "released",
+    );
 
     // autonomous allow path then force failure abandonment
     createMandateVersion(
@@ -960,5 +988,252 @@ describe("order flow", () => {
         ),
       (err: unknown) => err instanceof AppError && err.status === 403,
     );
+  });
+
+  it("rejects once, releases budget once, and never starts Stripe", async () => {
+    const { order } = await createOrder(
+      fx.db,
+      fx.buyerAgent,
+      {
+        product_key: "avocado",
+        unit: "case",
+        quantity: 2,
+        delivery_location_id: "kitchen-1",
+      },
+      randomUUID(),
+      "reject-1",
+      fx.stripe,
+    );
+    const rejected = await decideApproval(
+      fx.db,
+      fx.human,
+      order.id,
+      { decision: "reject", reason: "Not needed" },
+      "reject-2",
+      fx.stripe,
+    );
+    assert.equal(rejected.status, "rejected");
+    assert.equal(fx.stripe.createAttempts.length, 0);
+    assert.equal(
+      (
+        fx.db
+          .prepare(`SELECT status FROM budget_reservations WHERE order_id = ?`)
+          .get(order.id) as { status: string }
+      ).status,
+      "released",
+    );
+    await assert.rejects(
+      () =>
+        decideApproval(
+          fx.db,
+          fx.human,
+          order.id,
+          { decision: "approve" },
+          "reject-3",
+          fx.stripe,
+        ),
+      (error: unknown) =>
+        error instanceof AppError &&
+        error.code === "approval_already_decided",
+    );
+    assert.equal(
+      (
+        fx.db
+          .prepare(
+            `SELECT COUNT(*) AS n FROM audit_events
+             WHERE aggregate_id = ? AND event_type = 'budget.released'`,
+          )
+          .get(order.id) as { n: number }
+      ).n,
+      1,
+    );
+  });
+
+  it("materializes expiry before tenant-filtered queue reads", async () => {
+    const { order } = await createOrder(
+      fx.db,
+      fx.buyerAgent,
+      {
+        product_key: "avocado",
+        unit: "case",
+        quantity: 2,
+        delivery_location_id: "kitchen-1",
+      },
+      randomUUID(),
+      "queue-expiry-1",
+      fx.stripe,
+    );
+    assert.deepEqual(
+      listApprovals(
+        fx.db,
+        fx.supplierAId,
+        "queue-expiry-other",
+        order.approval_expires_at!,
+      ),
+      [],
+    );
+    assert.equal(
+      (
+        fx.db
+          .prepare(`SELECT status FROM orders WHERE id = ?`)
+          .get(order.id) as { status: string }
+      ).status,
+      "awaiting_approval",
+    );
+    assert.deepEqual(
+      listApprovals(
+        fx.db,
+        fx.buyerOrgId,
+        "queue-expiry-buyer",
+        order.approval_expires_at!,
+      ),
+      [],
+    );
+    assert.deepEqual(
+      fx.db
+        .prepare(
+          `SELECT o.status AS order_status, r.status AS reservation_status
+           FROM orders o JOIN budget_reservations r ON r.order_id = o.id
+           WHERE o.id = ?`,
+        )
+        .get(order.id),
+      { order_status: "expired", reservation_status: "released" },
+    );
+  });
+
+  it("enforces approval permission and tenant ownership in the core", async () => {
+    const { order } = await createOrder(
+      fx.db,
+      fx.buyerAgent,
+      {
+        product_key: "avocado",
+        unit: "case",
+        quantity: 2,
+        delivery_location_id: "kitchen-1",
+      },
+      randomUUID(),
+      "approval-auth-1",
+      fx.stripe,
+    );
+    await assert.rejects(
+      () =>
+        decideApproval(
+          fx.db,
+          { ...fx.human, permissions: new Set() },
+          order.id,
+          { decision: "approve" },
+          "approval-auth-2",
+          fx.stripe,
+        ),
+      (error: unknown) =>
+        error instanceof AppError && error.code === "forbidden",
+    );
+    await assert.rejects(
+      () =>
+        decideApproval(
+          fx.db,
+          { ...fx.human, organizationId: fx.supplierAId },
+          order.id,
+          { decision: "approve" },
+          "approval-auth-3",
+          fx.stripe,
+        ),
+      (error: unknown) =>
+        error instanceof AppError && error.code === "not_found",
+    );
+    assert.equal(fx.stripe.createAttempts.length, 0);
+  });
+
+  it("stales expired Mandate authority and releases capacity without Stripe", async () => {
+    const { order } = await createOrder(
+      fx.db,
+      fx.buyerAgent,
+      {
+        product_key: "avocado",
+        unit: "case",
+        quantity: 2,
+        delivery_location_id: "kitchen-1",
+      },
+      randomUUID(),
+      "authority-stale-1",
+      fx.stripe,
+    );
+    fx.db
+      .prepare(`UPDATE mandates SET valid_until = ? WHERE id = ?`)
+      .run(new Date().toISOString(), order.mandate_id);
+    await assert.rejects(
+      () =>
+        decideApproval(
+          fx.db,
+          fx.human,
+          order.id,
+          { decision: "approve" },
+          "authority-stale-2",
+          fx.stripe,
+        ),
+      (error: unknown) =>
+        error instanceof AppError && error.code === "mandate_stale",
+    );
+    assert.deepEqual(
+      fx.db
+        .prepare(
+          `SELECT o.status AS order_status, r.status AS reservation_status
+           FROM orders o JOIN budget_reservations r ON r.order_id = o.id
+           WHERE o.id = ?`,
+        )
+        .get(order.id),
+      { order_status: "stale", reservation_status: "released" },
+    );
+    assert.equal(fx.stripe.createAttempts.length, 0);
+  });
+
+  it("serializes conflicting approval decisions so one transition wins", async () => {
+    for (const decisions of [
+      ["approve", "reject"],
+      ["reject", "approve"],
+    ] as const) {
+      const { order } = await createOrder(
+        fx.db,
+        fx.buyerAgent,
+        {
+          product_key: "avocado",
+          unit: "case",
+          quantity: 2,
+          delivery_location_id: "kitchen-1",
+        },
+        randomUUID(),
+        `decision-race-${decisions[0]}`,
+        fx.stripe,
+      );
+      const results = await Promise.allSettled(
+        decisions.map((decision, index) =>
+          decideApproval(
+            fx.db,
+            fx.human,
+            order.id,
+            { decision },
+            `decision-race-${decisions[0]}-${index}`,
+            fx.stripe,
+          ),
+        ),
+      );
+      assert.equal(
+        results.filter((result) => result.status === "fulfilled").length,
+        1,
+      );
+      assert.equal(
+        results.filter((result) => result.status === "rejected").length,
+        1,
+      );
+      const status = (
+        fx.db
+          .prepare(`SELECT status FROM orders WHERE id = ?`)
+          .get(order.id) as { status: string }
+      ).status;
+      assert.equal(
+        status,
+        decisions[0] === "approve" ? "payment_pending" : "rejected",
+      );
+    }
   });
 });
