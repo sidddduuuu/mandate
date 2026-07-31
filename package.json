@@ -18,7 +18,7 @@
   },
   "dependencies": {
     "@auth0/nextjs-auth0": "^4.26.0",
-    "better-sqlite3": "^11.9.1",
+    "better-sqlite3": "^13.0.2",
     "jose": "^6.0.10",
     "next": "^15.3.1",
     "react": "^19.1.0",
@@ -36,5 +36,9 @@
     "eslint-config-next": "^15.3.1",
     "tsx": "^4.19.3",
     "typescript": "^5.8.3"
+  },
+  "overrides": {
+    "postcss": "8.5.25",
+    "sharp": "0.35.3"
   }
 }
