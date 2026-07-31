@@ -18,8 +18,10 @@ export function getAuth0Client(): Auth0Client | null {
     placeholderDomain ||
     !cfg.AUTH0_CLIENT_ID ||
     !cfg.AUTH0_CLIENT_SECRET ||
-    !cfg.AUTH0_SECRET
+    !cfg.AUTH0_SECRET ||
+    cfg.AUTH_TEST_MODE
   ) {
+    // AUTH_TEST_MODE keeps the local demo cookie path instead of Universal Login.
     client = null;
     return client;
   }

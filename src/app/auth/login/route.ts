@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { getDb } from "@/db";
 import { lookupOrgByAuth0Id } from "@/auth/context";
+import { getAuth0Client } from "@/lib/auth0";
 import {
   buildLocalSessionValue,
   COOKIE_NAME,
@@ -12,20 +13,26 @@ import { getConfig } from "@/lib/config";
 export const runtime = "nodejs";
 
 /**
- * Local/demo human login when Auth0 app credentials are not configured.
- * Real Auth0 SDK routes are mounted by middleware when AUTH0_* is complete.
+ * Human login entrypoint.
+ * - Auth0 configured + AUTH_TEST_MODE off → Auth0 Universal Login
+ * - Otherwise → local demo mandate_session cookie
  */
 export async function GET(request: Request): Promise<Response> {
-  if (isAuth0Configured() && !getConfig().AUTH_TEST_MODE) {
-    return NextResponse.json(
-      {
-        error: {
-          code: "auth0_expected",
-          message: "Auth0 is configured; use the Auth0 middleware login route.",
-        },
+  const url = new URL(request.url);
+  const orgHint =
+    url.searchParams.get("organization")?.trim() ||
+    process.env.SEED_BUYER_AUTH0_ORG_ID ||
+    "org_buyer";
+  const returnTo = url.searchParams.get("returnTo")?.trim() || "/approvals";
+
+  const auth0 = getAuth0Client();
+  if (auth0 && isAuth0Configured() && !getConfig().AUTH_TEST_MODE) {
+    return auth0.startInteractiveLogin({
+      returnTo: returnTo.startsWith("/") ? returnTo : "/approvals",
+      authorizationParameters: {
+        organization: orgHint,
       },
-      { status: 500 },
-    );
+    });
   }
 
   if (!usesLocalHumanAuth()) {
@@ -39,13 +46,6 @@ export async function GET(request: Request): Promise<Response> {
       { status: 500 },
     );
   }
-
-  const url = new URL(request.url);
-  const orgHint =
-    url.searchParams.get("organization")?.trim() ||
-    process.env.SEED_BUYER_AUTH0_ORG_ID ||
-    "org_buyer";
-  const returnTo = url.searchParams.get("returnTo")?.trim() || "/approvals";
 
   try {
     const db = getDb();
