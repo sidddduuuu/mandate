@@ -54,6 +54,9 @@ export function getAuth0Client(): Auth0Client {
           causeCode: cause && typeof cause === "object" && "code" in cause
             ? String(cause.code)
             : undefined,
+          causeMessage: cause instanceof Error
+            ? cause.message.replace(/[\r\n]/g, " ").slice(0, 200)
+            : undefined,
         });
         return new NextResponse("Authentication failed", { status: 500 });
       }
