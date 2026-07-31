@@ -1,4 +1,5 @@
 import { Auth0Client } from "@auth0/nextjs-auth0/server";
+import { NextResponse } from "next/server.js";
 import { AuthError } from "./context.ts";
 
 const HUMAN_SCOPES =
@@ -45,6 +46,23 @@ export function getAuth0Client(): Auth0Client {
       : { scope: LOGIN_SCOPES },
     logoutStrategy: "v2",
     enableAccessTokenEndpoint: false,
+    onCallback: async (error, context) => {
+      if (error) {
+        const cause = error.cause;
+        console.error("Auth0 callback failed", {
+          code: error.code,
+          causeCode: cause && typeof cause === "object" && "code" in cause
+            ? String(cause.code)
+            : undefined,
+        });
+        return new NextResponse("Authentication failed", { status: 500 });
+      }
+      const returnTo = context.returnTo?.startsWith("/")
+        && !context.returnTo.startsWith("//")
+        ? context.returnTo
+        : "/";
+      return NextResponse.redirect(new URL(returnTo, baseUrl));
+    },
   });
   return client;
 }

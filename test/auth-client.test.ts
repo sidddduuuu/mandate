@@ -3,7 +3,7 @@ import test from "node:test";
 
 import { getAuth0Client } from "../src/auth/client.ts";
 
-test("browser Auth0 login does not require an API audience", () => {
+test("browser Auth0 login does not require an API audience", async () => {
   const previous = Object.fromEntries(
     [
       "AUTH0_DOMAIN",
@@ -23,7 +23,12 @@ test("browser Auth0 login does not require an API audience", () => {
   });
   delete process.env.AUTH0_AUDIENCE;
   try {
-    assert.doesNotThrow(() => getAuth0Client());
+    const client = getAuth0Client();
+    const response = await client.middleware(
+      new Request("http://localhost:3000/auth/callback"),
+    );
+    assert.equal(response.status, 500);
+    assert.equal(await response.text(), "Authentication failed");
   } finally {
     for (const [name, value] of Object.entries(previous)) {
       if (value === undefined) delete process.env[name];
