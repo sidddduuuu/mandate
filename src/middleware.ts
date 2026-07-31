@@ -11,7 +11,7 @@ import { getAuth0Client } from "@/lib/auth0";
  */
 export async function middleware(request: NextRequest) {
   const auth0 = getAuth0Client();
-  if (!auth0) {
+  if (!auth0?.middleware) {
     return NextResponse.next();
   }
   return auth0.middleware(request);
