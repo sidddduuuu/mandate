@@ -7,6 +7,7 @@ import {
 import { jsonOk } from "@/lib/http";
 import { getConfig } from "@/lib/config";
 import { getStripe, readJson, withApi } from "@/lib/api";
+import { ensureDeliveryForPaidOrder } from "@/store/operations";
 
 export const runtime = "nodejs";
 
@@ -49,6 +50,10 @@ export async function POST(request: Request, context: Ctx): Promise<Response> {
           );
           order = getOrderForActor(db, actor, order.id);
         }
+      }
+
+      if (order.status === "paid") {
+        ensureDeliveryForPaidOrder(db, order, requestId);
       }
 
       return jsonOk(serializeOrder(order, "buyer"), { requestId });

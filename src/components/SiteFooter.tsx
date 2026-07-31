@@ -6,7 +6,9 @@ export function SiteFooter() {
       <Link className="brand" href="/">
         Mandate
       </Link>
-      <p>Governed commerce for AI agents. Auth0 identity · Stripe payments · human approval.</p>
+      <p>
+        Agentic store commerce — inventory scan, purchase list, owner approval, delivery restock.
+      </p>
     </footer>
   );
 }

@@ -1,5 +1,6 @@
 /**
- * Seeds an active buyer mandate + one awaiting_approval avocado order for the UI demo.
+ * Seeds store inventory, agent purchase needs, an active mandate, and
+ * awaiting_approval order(s) for the store-owner UI demo.
  */
 import { randomUUID } from "crypto";
 import { closeDb, getDb, migrate } from "../src/db";
@@ -8,6 +9,11 @@ import { createMandateVersion } from "../src/procurement/mandates";
 import { createOrder } from "../src/procurement/orders";
 import { createMemoryStripeAdapter } from "../src/payments/stripe";
 import type { ActorContext } from "../src/auth/context";
+import {
+  listPurchaseNeeds,
+  scanInventoryNeeds,
+  seedDefaultInventory,
+} from "../src/store/operations";
 
 process.env.AUTH_TEST_MODE = "1";
 resetConfigCache();
@@ -72,6 +78,10 @@ if (!active) {
   );
 }
 
+seedDefaultInventory(db, buyerOrg.id);
+scanInventoryNeeds(db, buyerAgent, "seed-demo-scan");
+const openNeeds = listPurchaseNeeds(db, buyerOrg.id, "open");
+
 async function main(): Promise<void> {
   const pending = db
     .prepare(
@@ -102,8 +112,16 @@ async function main(): Promise<void> {
     JSON.stringify(
       {
         buyer_auth0_org_id: buyerOrg.auth0_org_id,
+        inventory_seeded: true,
+        open_needs: openNeeds.length,
         awaiting_approval_order_id: orderId,
         login: `/auth/login?organization=${buyerOrg.auth0_org_id}`,
+        flow: [
+          "/inventory — agent scan / stock levels",
+          "/needs — purchase list",
+          "/approvals — store owner decides",
+          "/deliveries — track inbound + restock",
+        ],
       },
       null,
       2,

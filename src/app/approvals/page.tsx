@@ -18,8 +18,12 @@ export default async function ApprovalsPage() {
   return (
     <main id="main" className="app-shell">
       <header className="app-hero">
+        <p className="flow-kicker">3 · Store owner decision</p>
         <h1>Approvals</h1>
-        <p>Orders paused for a human decision—exact amount, offer, and mandate version.</p>
+        <p>
+          Exception spend the buyer agent cannot take alone—exact amount, offer, and mandate
+          version for your sign-off.
+        </p>
       </header>
       <ApprovalsClient />
       <p className="muted" style={{ marginTop: "1.5rem" }}>

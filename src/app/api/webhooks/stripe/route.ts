@@ -1,7 +1,8 @@
 import { getDb } from "@/db";
 import { getStripe } from "@/lib/api";
 import { getRequestId, jsonError, jsonOk, toErrorResponse } from "@/lib/http";
-import { handleStripeWebhook } from "@/procurement/orders";
+import { handleStripeWebhook, type OrderRow } from "@/procurement/orders";
+import { ensureDeliveryForPaidOrder } from "@/store/operations";
 
 export const runtime = "nodejs";
 
@@ -42,6 +43,18 @@ export async function POST(request: Request): Promise<Response> {
       },
       requestId,
     );
+
+    const orderId = (
+      event as { data?: { object?: { metadata?: { order_id?: string } } } }
+    ).data?.object?.metadata?.order_id;
+    if (event.type === "payment_intent.succeeded" && orderId) {
+      const order = db.prepare(`SELECT * FROM orders WHERE id = ?`).get(orderId) as
+        | OrderRow
+        | undefined;
+      if (order?.status === "paid") {
+        ensureDeliveryForPaidOrder(db, order, requestId);
+      }
+    }
 
     return jsonOk({ received: true, duplicate: result.duplicate }, { requestId });
   } catch (err) {

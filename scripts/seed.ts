@@ -63,26 +63,38 @@ const db = getDb();
 const from = new Date(Date.now() - 60_000).toISOString();
 const until = new Date(Date.now() + 30 * 24 * 3600_000).toISOString();
 
-for (const [orgId, sku, price] of [
-  [supplierA, "AVO-CASE-48", 4200],
-  [supplierB, "AVO-CASE-48", 3900],
-] as const) {
+const catalogSeed: Array<{
+  orgId: string;
+  sku: string;
+  productKey: string;
+  price: number;
+  name: string;
+}> = [
+  { orgId: supplierA, sku: "AVO-CASE-48", productKey: "avocado", price: 4200, name: "Hass Avocados (48ct case)" },
+  { orgId: supplierB, sku: "AVO-CASE-48", productKey: "avocado", price: 3900, name: "Hass Avocados (48ct case)" },
+  { orgId: supplierA, sku: "TOM-CASE-25", productKey: "tomato", price: 2800, name: "Roma Tomatoes (25lb case)" },
+  { orgId: supplierB, sku: "TOM-CASE-25", productKey: "tomato", price: 2500, name: "Roma Tomatoes (25lb case)" },
+  { orgId: supplierA, sku: "LET-CASE-12", productKey: "lettuce", price: 1800, name: "Butter Lettuce (12ct case)" },
+  { orgId: supplierB, sku: "LET-CASE-12", productKey: "lettuce", price: 1600, name: "Butter Lettuce (12ct case)" },
+];
+
+for (const row of catalogSeed) {
   const exists = db
     .prepare(`SELECT id FROM catalog_items WHERE supplier_org_id = ? AND sku = ?`)
-    .get(orgId, sku);
+    .get(row.orgId, row.sku);
   if (!exists) {
     seedRegisteredSku(db, {
-      supplierOrgId: orgId,
-      sku,
-      productKey: "avocado",
+      supplierOrgId: row.orgId,
+      sku: row.sku,
+      productKey: row.productKey,
       category: "produce",
       unit: "case",
-      unitPriceMinor: price,
+      unitPriceMinor: row.price,
       currency: "USD",
       advisoryQuantity: 100,
       validFrom: from,
       validUntil: until,
-      displayName: "Hass Avocados (48ct case)",
+      displayName: row.name,
     });
   }
 }

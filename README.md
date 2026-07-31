@@ -53,13 +53,15 @@ Agent M2M stays on bearer JWTs (`AUTH0_AUDIENCE` + JWKS). With `AUTH_TEST_MODE=1
 
 ### Human UI
 
-Verae-inspired product surface (warm editorial landing + approver workspace):
+Verae-inspired product surface for the store-owner agentic loop:
 
-- `/` — marketing / product page
-- `/approvals` — pending human decisions
-- `/orders` · `/orders/[id]` — history and approve/reject
-- `/mandates` — publish a mandate version
-- `/audit` — organization audit trail
+1. `/inventory` — stock levels; run the buyer-agent restock scan
+2. `/needs` — agent purchase list; place governed orders
+3. `/approvals` · `/orders/[id]` — store owner approves exception spend
+4. `/deliveries` — track inbound; inventory restocks on delivery
+5. `/mandates` · `/orders` · `/audit` — policy, history, audit
+
+Landing page: `/`.
 
 ### Provider checks
 

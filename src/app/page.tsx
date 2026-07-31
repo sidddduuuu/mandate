@@ -121,33 +121,33 @@ export default async function HomePage() {
             </Link>
           </div>
           <div className="product-rail">
+            <Link className="product-tile" href="/inventory">
+              <div className="product-tile-media">
+                <Image src="/images/kitchen.jpg" alt="" width={800} height={1000} />
+              </div>
+              <h3>Inventory scan</h3>
+              <p>Agent spots what the store needs</p>
+            </Link>
+            <Link className="product-tile" href="/needs">
+              <div className="product-tile-media">
+                <Image src="/images/produce.jpg" alt="" width={800} height={1000} />
+              </div>
+              <h3>Purchase list</h3>
+              <p>Agent builds the restock order</p>
+            </Link>
             <Link className="product-tile" href="/approvals">
               <div className="product-tile-media">
                 <Image src="/images/hands.jpg" alt="" width={800} height={1000} />
               </div>
-              <h3>Human approvals</h3>
-              <p>Decide exact over-limit orders</p>
+              <h3>Owner approval</h3>
+              <p>You sign off exception spend</p>
             </Link>
-            <Link className="product-tile" href="/orders">
-              <div className="product-tile-media">
-                <Image src="/images/produce.jpg" alt="" width={800} height={1000} />
-              </div>
-              <h3>Order trail</h3>
-              <p>From offer to paid state</p>
-            </Link>
-            <Link className="product-tile" href="/audit">
-              <div className="product-tile-media">
-                <Image src="/images/kitchen.jpg" alt="" width={800} height={1000} />
-              </div>
-              <h3>Audit view</h3>
-              <p>Every decision, attributable</p>
-            </Link>
-            <Link className="product-tile" href="/mandates">
+            <Link className="product-tile" href="/deliveries">
               <div className="product-tile-media">
                 <Image src="/images/hero.jpg" alt="" width={800} height={1000} />
               </div>
-              <h3>Mandate versions</h3>
-              <p>Immutable policy releases</p>
+              <h3>Delivery &amp; restock</h3>
+              <p>Track inbound, update inventory</p>
             </Link>
           </div>
         </Reveal>
@@ -159,17 +159,17 @@ export default async function HomePage() {
             <div>
               <h2 id="rhythm-heading">Stay in your best rhythm.</h2>
               <p className="muted" style={{ color: "rgba(255,253,250,0.65)", marginTop: "0.75rem" }}>
-                Sign in with Auth0 Organizations to approve spend for your buyer org.
+                Store owners watch inventory, approve agent purchases, and track delivery restocks.
               </p>
             </div>
             <div className="rhythm-form" role="group" aria-label="Organization login">
               {session?.user ? (
-                <a className="btn btn-gold" href="/approvals">
-                  Continue to approvals <span className="arrow" aria-hidden>→</span>
+                <a className="btn btn-gold" href="/inventory">
+                  Open store workspace <span className="arrow" aria-hidden>→</span>
                 </a>
               ) : (
                 <a className="btn btn-gold" href={loginHref}>
-                  Sign up for access <span className="arrow" aria-hidden>→</span>
+                  Enter as store owner <span className="arrow" aria-hidden>→</span>
                 </a>
               )}
             </div>

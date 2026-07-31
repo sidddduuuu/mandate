@@ -53,6 +53,21 @@ export type OrderView = {
   supplier_org_id?: string;
 };
 
+export type DeliveryView = {
+  id: string;
+  order_id: string;
+  product_key: string;
+  quantity: number;
+  unit: string;
+  location_id: string;
+  status: string;
+  eta_at: string | null;
+  shipped_at: string | null;
+  delivered_at: string | null;
+  inventory_applied: boolean;
+  next_status: string | null;
+};
+
 export type AuditEventView = {
   id: string;
   aggregate_type: string;

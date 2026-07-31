@@ -146,3 +146,70 @@ BEFORE DELETE ON audit_events
 BEGIN
   SELECT RAISE(ABORT, 'audit_events is append-only');
 END;
+
+-- Buyer store stock levels (agent detects needs against reorder points).
+CREATE TABLE IF NOT EXISTS inventory_items (
+  id TEXT PRIMARY KEY,
+  buyer_org_id TEXT NOT NULL REFERENCES organizations(id),
+  product_key TEXT NOT NULL,
+  display_name TEXT NOT NULL,
+  category TEXT NOT NULL,
+  unit TEXT NOT NULL,
+  location_id TEXT NOT NULL,
+  on_hand INTEGER NOT NULL CHECK (on_hand >= 0),
+  reorder_point INTEGER NOT NULL CHECK (reorder_point >= 0),
+  target_quantity INTEGER NOT NULL CHECK (target_quantity >= 0),
+  updated_at TEXT NOT NULL,
+  UNIQUE (buyer_org_id, product_key, location_id)
+);
+
+CREATE INDEX IF NOT EXISTS inventory_buyer_idx
+  ON inventory_items(buyer_org_id, location_id);
+
+-- Agent-authored purchase list for the store owner.
+CREATE TABLE IF NOT EXISTS purchase_needs (
+  id TEXT PRIMARY KEY,
+  buyer_org_id TEXT NOT NULL REFERENCES organizations(id),
+  inventory_item_id TEXT NOT NULL REFERENCES inventory_items(id),
+  product_key TEXT NOT NULL,
+  unit TEXT NOT NULL,
+  location_id TEXT NOT NULL,
+  suggested_quantity INTEGER NOT NULL CHECK (suggested_quantity > 0),
+  reason TEXT NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('open', 'ordered', 'dismissed')),
+  order_id TEXT REFERENCES orders(id),
+  detected_by_subject TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS purchase_needs_buyer_status_idx
+  ON purchase_needs(buyer_org_id, status);
+
+-- Delivery tracking after payment; inventory is applied on delivered.
+CREATE TABLE IF NOT EXISTS deliveries (
+  id TEXT PRIMARY KEY,
+  order_id TEXT NOT NULL UNIQUE REFERENCES orders(id),
+  buyer_org_id TEXT NOT NULL REFERENCES organizations(id),
+  supplier_org_id TEXT NOT NULL REFERENCES organizations(id),
+  product_key TEXT NOT NULL,
+  quantity INTEGER NOT NULL CHECK (quantity > 0),
+  unit TEXT NOT NULL,
+  location_id TEXT NOT NULL,
+  status TEXT NOT NULL CHECK (status IN (
+    'packing',
+    'shipped',
+    'out_for_delivery',
+    'delivered',
+    'cancelled'
+  )),
+  eta_at TEXT,
+  shipped_at TEXT,
+  delivered_at TEXT,
+  inventory_applied INTEGER NOT NULL DEFAULT 0 CHECK (inventory_applied IN (0, 1)),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS deliveries_buyer_status_idx
+  ON deliveries(buyer_org_id, status);

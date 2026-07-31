@@ -3,11 +3,12 @@
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { StatusBadge } from "@/components/StatusBadge";
-import { apiGet, apiMutate, type OrderView } from "@/lib/client-api";
+import { apiGet, apiMutate, type DeliveryView, type OrderView } from "@/lib/client-api";
 import { formatMoney, formatWhen } from "@/lib/format";
 
 export function OrderDetailClient({ orderId }: { orderId: string }) {
   const [order, setOrder] = useState<OrderView | null>(null);
+  const [delivery, setDelivery] = useState<DeliveryView | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [reason, setReason] = useState("");
@@ -16,6 +17,12 @@ export function OrderDetailClient({ orderId }: { orderId: string }) {
   const load = useCallback(async () => {
     const data = await apiGet<OrderView>(`/api/orders/${orderId}`);
     setOrder(data);
+    try {
+      const all = await apiGet<{ deliveries: DeliveryView[] }>("/api/deliveries");
+      setDelivery(all.deliveries.find((d) => d.order_id === orderId) ?? null);
+    } catch {
+      setDelivery(null);
+    }
   }, [orderId]);
 
   useEffect(() => {
@@ -187,6 +194,25 @@ export function OrderDetailClient({ orderId }: { orderId: string }) {
               <button type="button" className="btn btn-ghost-dark" disabled={busy} onClick={() => void abandon()}>
                 Abandon failed payment
               </button>
+            </div>
+          ) : null}
+
+          {delivery ? (
+            <div style={{ marginTop: "1.25rem" }}>
+              <h2>Delivery</h2>
+              <dl className="kv">
+                <dt>Status</dt>
+                <dd>
+                  <StatusBadge status={delivery.status} />
+                </dd>
+                <dt>ETA</dt>
+                <dd>{formatWhen(delivery.eta_at)}</dd>
+                <dt>Inventory</dt>
+                <dd>{delivery.inventory_applied ? "Restocked on delivery" : "Pending delivery"}</dd>
+              </dl>
+              <Link className="btn btn-ghost-dark btn-sm" href="/deliveries">
+                Track delivery <span className="arrow" aria-hidden>→</span>
+              </Link>
             </div>
           ) : null}
         </section>

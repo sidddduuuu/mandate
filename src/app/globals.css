@@ -226,7 +226,7 @@ p {
 
 .nav-links a {
   text-decoration: none;
-  font-size: 0.92rem;
+  font-size: 0.86rem;
   color: var(--brown-800);
 }
 
@@ -752,21 +752,75 @@ p {
 }
 
 .status-awaiting_approval,
-.status-payment_pending {
+.status-payment_pending,
+.status-packing,
+.status-shipped,
+.status-out_for_delivery,
+.status-open,
+.status-low_stock {
   background: rgba(154, 112, 64, 0.16);
   color: var(--pending);
 }
 
-.status-paid {
+.status-paid,
+.status-delivered,
+.status-ordered,
+.status-in_stock {
   background: rgba(61, 107, 79, 0.16);
   color: var(--success);
 }
 
 .status-denied,
 .status-rejected,
-.status-payment_failed {
+.status-payment_failed,
+.status-cancelled,
+.status-dismissed {
   background: rgba(139, 52, 48, 0.14);
   color: var(--danger);
+}
+
+.flow-kicker {
+  font-size: 0.78rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--gold);
+  margin: 0;
+}
+
+.list-row-static {
+  cursor: default;
+}
+
+.list-row-static:hover {
+  transform: none;
+}
+
+.delivery-row {
+  align-items: start;
+}
+
+.delivery-steps {
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  padding: 0;
+  margin: 0.75rem 0 0;
+}
+
+.delivery-step {
+  font-size: 0.72rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+  padding: 0.2rem 0.55rem;
+  border-radius: 999px;
+  background: rgba(36, 24, 18, 0.05);
+}
+
+.delivery-step-done {
+  color: var(--success);
+  background: rgba(61, 107, 79, 0.12);
 }
 
 .list {
