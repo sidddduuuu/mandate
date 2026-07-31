@@ -12,7 +12,10 @@
     "db:init": "tsx scripts/init-db.ts",
     "seed": "tsx scripts/seed.ts",
     "reconcile": "tsx scripts/reconcile.ts",
-    "demo": "tsx scripts/demo.ts"
+    "demo": "tsx scripts/demo.ts",
+    "check:stripe": "tsx scripts/live-stripe-check.ts",
+    "check:auth0": "tsx scripts/live-auth0-check.ts",
+    "check:providers": "tsx scripts/live-auth0-check.ts && tsx scripts/live-stripe-check.ts"
   },
   "dependencies": {
     "@auth0/nextjs-auth0": "^4.26.0",

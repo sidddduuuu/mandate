@@ -48,3 +48,15 @@ This repo uses the official Auth0 agent skill (`.agents/skills/auth0`) and
 4. Call `GET /api/session` — Mandate maps the Auth0 `org_id` + permissions into the human actor used by approvals/mandates.
 
 Agent M2M stays on bearer JWTs (`AUTH0_AUDIENCE` + JWKS). Set `AUTH_TEST_MODE=1` only for local HS256 agent tokens and the test `mandate_session` cookie.
+
+### Provider checks
+
+```bash
+# Real Stripe test/sandbox keys in .env (+ webhook secret from stripe listen)
+npm run check:stripe
+
+# Auth0 tenant env (skipped cleanly if AUTH0_DOMAIN unset)
+npm run check:auth0
+```
+
+Evidence and remaining Auth0 credential steps: [docs/adr/0003-auth0-stripe-integration-evidence.md](docs/adr/0003-auth0-stripe-integration-evidence.md).
