@@ -6,6 +6,7 @@ import test from "node:test";
 
 import {
   initializeDatabase,
+  withDatabase,
   withImmediateTransaction,
 } from "../src/db.ts";
 
@@ -14,19 +15,43 @@ const later = "2027-07-30T12:00:00.000Z";
 const policyHash = "a".repeat(64);
 const requestHash = "b".repeat(64);
 
-test("schema enforces tenant, mandate, order, and audit invariants", () => {
+test("schema enforces tenant, mandate, order, and audit invariants", async () => {
   const db = initializeDatabase(":memory:");
   const organization = db.prepare(
     "INSERT INTO organizations (id, auth0_org_id, name, kind, created_at) VALUES (?, ?, ?, ?, ?)",
   );
 
-  withImmediateTransaction(db, () => {
+  await withImmediateTransaction(db, async () => {
     organization.run("buyer", "org_buyer", "Buyer", "buyer", now);
     organization.run("supplier", "org_supplier", "Supplier", "supplier", now);
   });
   assert.equal(db.prepare("PRAGMA foreign_keys").get()?.foreign_keys, 1);
   assert.throws(() =>
     organization.run("bad-kind", "org_bad", "Bad", "merchant", now),
+  );
+  const denial = db.prepare(`
+    INSERT INTO order_denials (
+      buyer_organization_id, requester_subject, idempotency_key, request_hash,
+      policy_reasons_json, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?)
+  `);
+  denial.run(
+    "buyer",
+    "agent",
+    "00000000-0000-4000-8000-000000000099",
+    requestHash,
+    '["MANDATE_MISSING"]',
+    now,
+  );
+  assert.throws(() =>
+    denial.run(
+      "buyer",
+      "agent",
+      "00000000-0000-4000-8000-000000000099",
+      requestHash,
+      '["MANDATE_MISSING"]',
+      now,
+    ),
   );
 
   db.prepare(`
@@ -53,6 +78,17 @@ test("schema enforces tenant, mandate, order, and audit invariants", () => {
   assert.throws(() =>
     mandate.run("mandate-2", 2, now, later, "c".repeat(64), now),
   );
+  assert.throws(
+    () =>
+      db.prepare(
+        "UPDATE mandates SET policy_json = ? WHERE id = 'mandate-1'",
+      ).run('{"changed":true}'),
+    /immutable/,
+  );
+  assert.throws(
+    () => db.prepare("DELETE FROM mandates WHERE id = 'mandate-1'").run(),
+    /immutable/,
+  );
 
   const order = db.prepare(`
     INSERT INTO orders (
@@ -69,12 +105,60 @@ test("schema enforces tenant, mandate, order, and audit invariants", () => {
       '["ORDER_LIMIT_EXCEEDED"]', ?, ?, ?, ?, ?
     )
   `);
-  order.run("order-1", policyHash, 2400, "key-1", requestHash, later, now, now);
-  assert.throws(() =>
-    order.run("order-2", policyHash, 2400, "key-1", requestHash, later, now, now),
+  const orderKey = "00000000-0000-4000-8000-000000000201";
+  const secondOrderKey = "00000000-0000-4000-8000-000000000202";
+  order.run(
+    "order-1",
+    policyHash,
+    2400,
+    orderKey,
+    requestHash,
+    later,
+    now,
+    now,
   );
   assert.throws(() =>
-    order.run("order-3", policyHash, 1, "key-2", requestHash, later, now, now),
+    order.run(
+      "order-2",
+      policyHash,
+      2400,
+      orderKey,
+      requestHash,
+      later,
+      now,
+      now,
+    ),
+  );
+  assert.throws(() =>
+    order.run(
+      "order-3",
+      policyHash,
+      1,
+      secondOrderKey,
+      requestHash,
+      later,
+      now,
+      now,
+    ),
+  );
+  assert.throws(() =>
+    order.run(
+      "order-invalid-key",
+      policyHash,
+      2400,
+      "short-key",
+      requestHash,
+      later,
+      now,
+      now,
+    ),
+  );
+  assert.throws(
+    () =>
+      db.prepare(
+        "UPDATE orders SET unit_price = 100, total = 200 WHERE id = 'order-1'",
+      ).run(),
+    /immutable/,
   );
 
   db.prepare(`
@@ -93,8 +177,8 @@ test("schema enforces tenant, mandate, order, and audit invariants", () => {
     /append-only/,
   );
 
-  assert.throws(() =>
-    withImmediateTransaction(db, () => {
+  await assert.rejects(
+    async () => withImmediateTransaction(db, async () => {
       organization.run("rolled-back", "org_rolled_back", "Rolled back", "buyer", now);
       throw new Error("rollback");
     }),
@@ -116,4 +200,18 @@ test("file databases use WAL", (context) => {
   });
 
   assert.equal(db.prepare("PRAGMA journal_mode").get()?.journal_mode, "wal");
+});
+
+test("application database requires a Postgres URL", async () => {
+  const previousUrl = process.env.DATABASE_URL;
+  delete process.env.DATABASE_URL;
+  try {
+    await assert.rejects(
+      async () => withDatabase(async () => undefined),
+      /DATABASE_URL is required/,
+    );
+  } finally {
+    if (previousUrl === undefined) delete process.env.DATABASE_URL;
+    else process.env.DATABASE_URL = previousUrl;
+  }
 });

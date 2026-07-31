@@ -1,4 +1,4 @@
-import { ApprovalDemo } from "./approval-demo";
+import Image from "next/image";
 
 const controls = [
   ["Identity", "Auth0 proves the agent and organization.", "Verified"],
@@ -17,18 +17,28 @@ export default function Home() {
       </a>
 
       <header className="hero" id="top">
+        <Image
+          className="hero-background"
+          src="/images/produce-wall.webp"
+          alt=""
+          fill
+          priority
+          sizes="100vw"
+        />
         <nav className="top-nav frame" aria-label="Primary navigation">
-          <a href="#request">Review request</a>
+          <a href="/auth/login?returnTo=%2Fdashboard">Operator login · Auth0</a>
           <span className="nav-dot" aria-hidden="true" />
           <div className="nav-links">
-            <a href="#mandate">Mandate</a>
-            <a href="#audit">Audit</a>
+            <a href="#mandate">Product</a>
+            <a href="#control">How it works</a>
           </div>
         </nav>
 
         <div className="hero-message frame">
           <p>Governed commerce for AI agents.</p>
-          <a href="#request">1 exception awaiting review&nbsp; →</a>
+          <a href="/auth/login?returnTo=%2Fdashboard">
+            Open operations dashboard&nbsp; →
+          </a>
         </div>
 
         <div className="hero-bottom">
@@ -57,7 +67,7 @@ export default function Home() {
         <section className="feature-section" id="mandate">
           <div className="section-bar frame">
             <span>02/</span>
-            <span>Live mandate</span>
+            <span>Mandate preview</span>
           </div>
 
           <div className="feature-frame frame">
@@ -69,10 +79,12 @@ export default function Home() {
                   <p>Juniper Table Group</p>
                 </div>
                 <nav aria-label="Mandate preview">
-                  <span className="rail-active">Overview</span>
-                  <span>Orders</span>
-                  <span>Suppliers</span>
-                  <span>Audit</span>
+                  <ul>
+                    <li className="rail-active">Overview</li>
+                    <li>Orders</li>
+                    <li>Suppliers</li>
+                    <li>Audit</li>
+                  </ul>
                 </nav>
                 <p className="screen-foot">Test mode · M-104</p>
               </div>
@@ -119,8 +131,13 @@ export default function Home() {
                       !
                     </span>
                     <div>
-                      <p className="screen-label">Exception awaiting review</p>
-                      <p>18 cases of Hass avocados · Greenline Produce</p>
+                      <p className="screen-label">Example exception</p>
+                      <p>
+                        <span className="ingredient-icon" aria-hidden="true">
+                          🥑
+                        </span>
+                        18 cases of Hass avocados · Greenline Produce
+                      </p>
                     </div>
                   </div>
                   <strong>$384.00</strong>
@@ -130,7 +147,7 @@ export default function Home() {
           </div>
         </section>
 
-        <section className="control-section neutral-section">
+        <section className="control-section neutral-section" id="control">
           <div className="section-bar frame">
             <span>03/</span>
             <span>Control path</span>
@@ -155,13 +172,15 @@ export default function Home() {
           </div>
         </section>
 
-        <ApprovalDemo />
       </main>
 
       <footer className="site-footer">
-        <a className="footer-cta frame" href="#request">
+        <a
+          className="footer-cta frame"
+          href="/auth/login?returnTo=%2Fdashboard"
+        >
           <span>Ready to delegate?</span>
-          <span>→ Set a mandate</span>
+          <span>→ Login with Auth0</span>
         </a>
 
         <ol className="workflow-circles frame" aria-label="Mandate workflow">

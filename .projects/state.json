@@ -1,0 +1,69 @@
+{
+  "version": 1,
+  "providers": {
+    "auth0": {
+      "name": "Auth0"
+    }
+  },
+  "resources": {
+    "auth0": {
+      "name": "auth0",
+      "providerName": "Auth0",
+      "serviceId": "client"
+    },
+    "auth0-plan": {
+      "name": "auth0-plan",
+      "providerName": "Auth0",
+      "serviceId": "free"
+    }
+  },
+  "environments": {
+    "default": {
+      "output": ".env",
+      "resources": [
+        {
+          "resourceName": "auth0"
+        },
+        {
+          "resourceName": "auth0-plan"
+        }
+      ],
+      "variables": [
+        {
+          "variableName": "app-base-url",
+          "envKey": "APP_BASE_URL"
+        },
+        {
+          "variableName": "auth0-session-secret",
+          "envKey": "AUTH0_SECRET"
+        },
+        {
+          "variableName": "stripe-test-key",
+          "envKey": "STRIPE_SECRET_KEY"
+        },
+        {
+          "variableName": "stripe-webhook-secret",
+          "envKey": "STRIPE_WEBHOOK_SECRET"
+        }
+      ]
+    }
+  },
+  "variables": {
+    "app-base-url": {
+      "name": "app-base-url",
+      "backendId": "fprjvar_61V8SWsbJrZRpzalM16V8Rg51gSQdlMGcQLwhq8jgRfc"
+    },
+    "auth0-session-secret": {
+      "name": "auth0-session-secret",
+      "backendId": "fprjvar_61V8SWqC9cGJt13sb16V8Rg51gSQdlMGcQLwhq8jg9rE"
+    },
+    "stripe-test-key": {
+      "name": "stripe-test-key",
+      "backendId": "fprjvar_61V8ScR25gGSnODOa16V8Rg51gSQdlMGcQLwhq8jgVpI"
+    },
+    "stripe-webhook-secret": {
+      "name": "stripe-webhook-secret",
+      "backendId": "fprjvar_61V8ScUZN0ROVDd5h16V8Rg51gSQdlMGcQLwhq8jgRdA"
+    }
+  }
+}

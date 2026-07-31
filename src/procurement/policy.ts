@@ -14,6 +14,7 @@ export type PolicyReasonCode =
   | "UNIT_PRICE_LIMIT_EXCEEDED"
   | "ORDER_TOTAL_OVERFLOW"
   | "ORDER_TOTAL_LIMIT_EXCEEDED"
+  | "INVALID_BUDGET_STATE"
   | "MANDATE_MISSING"
   | "MANDATE_INACTIVE"
   | "MANDATE_INVALID"
@@ -95,7 +96,6 @@ function validMinorAmount(value: number, cap: number): boolean {
 
 function mandateIsValid(
   mandate: Readonly<MandatePolicy>,
-  remainingBudgetMinor: number,
 ): boolean {
   return (
     validMinorAmount(
@@ -106,11 +106,7 @@ function mandateIsValid(
       mandate.hardExceptionLimitMinor,
       POLICY_CAPS.orderTotalMinor,
     ) &&
-    mandate.autonomousOrderLimitMinor <= mandate.hardExceptionLimitMinor &&
-    validMinorAmount(
-      remainingBudgetMinor,
-      POLICY_CAPS.periodBudgetMinor,
-    )
+    mandate.autonomousOrderLimitMinor <= mandate.hardExceptionLimitMinor
   );
 }
 
@@ -122,9 +118,14 @@ function hardRuleReasons(
   if (!mandate) return ["MANDATE_MISSING"];
 
   const reasonCodes: PolicyReasonCode[] = [];
-  const validMandate = mandateIsValid(mandate, input.remainingBudgetMinor);
+  const validMandate = mandateIsValid(mandate);
   if (!mandate.active) reasonCodes.push("MANDATE_INACTIVE");
   if (!validMandate) reasonCodes.push("MANDATE_INVALID");
+  if (
+    !Number.isSafeInteger(input.remainingBudgetMinor) ||
+    Math.abs(input.remainingBudgetMinor) > POLICY_CAPS.periodBudgetMinor
+  )
+    reasonCodes.push("INVALID_BUDGET_STATE");
   if (mandate.buyerOrgId !== input.buyerOrgId)
     reasonCodes.push("TENANT_MISMATCH");
   if (!input.offer.active) reasonCodes.push("OFFER_INACTIVE");

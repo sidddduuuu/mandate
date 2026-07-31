@@ -1,21 +1,20 @@
 # Mandate architecture
 
-Status: proposed MVP architecture
+Status: implemented MVP architecture
 
 Scope: the Auth0 + Stripe hackathon demo described in [MANDATE.md](MANDATE.md)
 
 ## Verdict
 
-Build Mandate as one strict-TypeScript Next.js application with one SQLite
+Build Mandate as one strict-TypeScript Next.js application with one Postgres
 database. The same deployable serves the human approval UI, agent-facing HTTP
 API, policy evaluation, order workflow, audit trail, and Stripe webhook.
 
 Auth0 owns identity, organization membership, and coarse permissions. Mandate
 owns procurement policy and approval decisions. Stripe owns payment method and
-payment lifecycle state. SQLite is the transactional source of truth for the
-demo.
+payment lifecycle state. Postgres is the transactional source of truth.
 
-This is deliberately a single-process, local-first architecture. It does not
+This is deliberately a single-deployable architecture. It does not
 need microservices, a message bus, a generic policy engine, an ORM, or separate
 frontend and backend applications.
 
@@ -44,7 +43,7 @@ frontend and backend applications.
 - Multi-line, multi-supplier, or partially fulfilled orders.
 - AI-based product matching or a generic policy language.
 - Multiple approval levels or delegated approval chains.
-- Multiple application instances, high availability, or offline operation.
+- High availability or offline operation.
 - Cryptographic audit proofs or a compliance archive.
 
 ## System context
@@ -57,7 +56,7 @@ flowchart LR
 
     subgraph Mandate trust boundary
         APP[Next.js UI + API]
-        DB[(SQLite)]
+        DB[(Neon Postgres)]
         APP --> DB
     end
 
@@ -262,7 +261,7 @@ check `unit_price <= max_order_total / quantity` before multiplication.
 Validate policy JSON and its monetary limits against a versioned runtime
 schema before writing it.
 
-`audit_events` is insert-only. SQLite triggers reject update and delete
+`audit_events` is insert-only. Postgres triggers reject update and delete
 attempts. This is sufficient for the demo, not a compliance archive.
 
 The demo seed creates internal organization rows keyed to existing Auth0
@@ -318,10 +317,9 @@ messages are stable and non-sensitive.
 | `POST` | `/api/webhooks/stripe` | Public ingress; raw-body Stripe signature verification, event allowlist, and deduplication |
 
 Authenticated state-changing routes have request-body and item-count limits,
-runtime schema validation, and a fixed-window per-subject rate limit. The
-webhook has its own strict body limit and signature check. The single-process
-demo keeps the limiter in memory; live or multi-instance deployment requires
-a shared limiter.
+runtime schema validation, and a fixed-window per-subject rate limit stored
+atomically in Postgres. The webhook has its own strict body limit and signature
+check.
 
 `POST /api/orders` requires a UUID idempotency key. The database also stores a
 hash of the validated request. Reusing the key with the same payload returns
@@ -333,12 +331,12 @@ the original order; reusing it with a different payload returns `409`.
 sequenceDiagram
     participant B as Buyer agent
     participant M as Mandate
-    participant D as SQLite
+    participant D as Postgres
     participant H as Human approver
     participant S as Stripe
 
     B->>M: POST /api/orders + token + idempotency key
-    M->>D: BEGIN IMMEDIATE; load offers, mandate, committed spend
+    M->>D: BEGIN; lock buyer; load offers, mandate, committed spend
     M->>M: Select offer, price, evaluate pure policy
     M->>D: Save immutable order, decision, applicable budget hold, audit; COMMIT
 
@@ -375,8 +373,8 @@ payment completion. No payment work starts after returning the HTTP response.
 
 ## Transaction and failure rules
 
-- Enable SQLite foreign keys and WAL mode. Use `BEGIN IMMEDIATE` around the
-  budget check and order insert so concurrent writers cannot both spend the
+- Use one Postgres transaction and lock the buyer organization row around the
+  budget check and order insert so concurrent instances cannot both spend the
   same remaining amount.
 - Committed spend includes unexpired `awaiting_approval`, `payment_pending`,
   `payment_failed`, and `paid` orders in the mandate's budget window. A failed
@@ -442,10 +440,11 @@ Stripe state divergence.
 
 ## Deployment and configuration
 
-### Local demo
+### Runtime
 
-- One Node process in the Node runtime; no Edge routes.
-- One local SQLite file excluded from Git.
+- Node runtime on Vercel; no Edge routes.
+- Neon Postgres in the same region, using a pooled runtime URL and an unpooled
+  migration URL.
 - Auth0 tenant with buyer, supplier, and human organization access.
 - Stripe test-mode account and saved test payment method.
 - Stripe CLI forwards to `/api/webhooks/stripe` using the CLI-issued webhook
@@ -453,9 +452,6 @@ Stripe state divergence.
   secret.
 - Secrets come only from environment variables. Commit an `.env.example` with
   names and safe descriptions, never values.
-
-Multiple app processes must not open the demo database. A multi-instance
-deployment requires Postgres and a shared rate limiter before it is supported.
 
 ### Suggested repository shape
 
@@ -479,7 +475,7 @@ src/
   procurement/policy.ts
   payments/stripe.ts
   db.ts
-db/schema.sql
+db/postgres.sql
 scripts/demo.ts
 scripts/reconcile.ts
 test/policy.test.ts
@@ -542,7 +538,7 @@ build, then the manual flow below.
 
 | Deferred capability | Add only when |
 |---|---|
-| Postgres + shared rate limiting | More than one app process, remote durability, or real money |
+| Dedicated Redis rate limiting | Postgres limiter traffic becomes measurable database load |
 | Stripe Connect and settlement ledger | Supplier payouts and commercial/legal ownership are decided |
 | Queue/outbox | Webhook work gains slow or non-database side effects |
 | Inventory reservation protocol | Suppliers can confirm and hold stock |

@@ -59,6 +59,10 @@ describe("evaluatePolicy", () => {
 
     assert.deepEqual(overOrder.reasonCodes, ["ORDER_LIMIT_EXCEEDED"]);
     assert.deepEqual(overBudget.reasonCodes, ["PERIOD_BUDGET_EXCEEDED"]);
+    assert.deepEqual(
+      evaluatePolicy(input({ remainingBudgetMinor: -1 })).reasonCodes,
+      ["PERIOD_BUDGET_EXCEEDED"],
+    );
     assert.deepEqual(both, {
       decision: "require_approval",
       reasonCodes: [

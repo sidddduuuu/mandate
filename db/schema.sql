@@ -1,6 +1,14 @@
 PRAGMA foreign_keys = ON;
 PRAGMA journal_mode = WAL;
 
+CREATE TABLE IF NOT EXISTS rate_limit_windows (
+  key TEXT PRIMARY KEY CHECK (length(key) BETWEEN 1 AND 512),
+  request_count INTEGER NOT NULL CHECK (request_count > 0),
+  resets_at TEXT NOT NULL CHECK (
+    resets_at GLOB '????-??-??T??:??:??*Z'
+  )
+) STRICT;
+
 CREATE TABLE IF NOT EXISTS organizations (
   id TEXT PRIMARY KEY CHECK (length(id) BETWEEN 1 AND 128),
   auth0_org_id TEXT NOT NULL UNIQUE CHECK (length(auth0_org_id) BETWEEN 1 AND 128),
@@ -11,6 +19,50 @@ CREATE TABLE IF NOT EXISTS organizations (
   created_at TEXT NOT NULL
     DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
     CHECK (created_at GLOB '????-??-??T??:??:??*Z')
+) STRICT;
+
+CREATE TABLE IF NOT EXISTS wallet_accounts (
+  organization_id TEXT PRIMARY KEY,
+  currency TEXT NOT NULL CHECK (currency GLOB '[A-Z][A-Z][A-Z]'),
+  balance INTEGER NOT NULL DEFAULT 0 CHECK (balance BETWEEN 0 AND 10000000000),
+  created_at TEXT NOT NULL CHECK (created_at GLOB '????-??-??T??:??:??*Z'),
+  updated_at TEXT NOT NULL CHECK (
+    updated_at GLOB '????-??-??T??:??:??*Z' AND updated_at >= created_at
+  ),
+  FOREIGN KEY (organization_id)
+    REFERENCES organizations(id) ON UPDATE RESTRICT ON DELETE RESTRICT
+) STRICT;
+
+CREATE TABLE IF NOT EXISTS wallet_topups (
+  id TEXT PRIMARY KEY CHECK (length(id) = 36),
+  organization_id TEXT NOT NULL,
+  amount INTEGER NOT NULL CHECK (amount BETWEEN 100 AND 100000000),
+  currency TEXT NOT NULL CHECK (currency GLOB '[A-Z][A-Z][A-Z]'),
+  status TEXT NOT NULL CHECK (status IN ('pending', 'paid', 'failed')),
+  stripe_payment_intent_id TEXT UNIQUE
+    CHECK (stripe_payment_intent_id IS NULL OR length(stripe_payment_intent_id) BETWEEN 1 AND 128),
+  created_at TEXT NOT NULL CHECK (created_at GLOB '????-??-??T??:??:??*Z'),
+  updated_at TEXT NOT NULL CHECK (
+    updated_at GLOB '????-??-??T??:??:??*Z' AND updated_at >= created_at
+  ),
+  FOREIGN KEY (organization_id)
+    REFERENCES organizations(id) ON UPDATE RESTRICT ON DELETE RESTRICT
+) STRICT;
+
+CREATE TABLE IF NOT EXISTS wallet_transactions (
+  id INTEGER PRIMARY KEY,
+  organization_id TEXT NOT NULL,
+  kind TEXT NOT NULL CHECK (kind IN ('funding', 'purchase')),
+  amount INTEGER NOT NULL CHECK (amount BETWEEN 1 AND 100000000),
+  order_id TEXT UNIQUE,
+  stripe_payment_intent_id TEXT UNIQUE,
+  created_at TEXT NOT NULL CHECK (created_at GLOB '????-??-??T??:??:??*Z'),
+  CHECK (
+    (kind = 'funding' AND stripe_payment_intent_id IS NOT NULL AND order_id IS NULL)
+    OR (kind = 'purchase' AND order_id IS NOT NULL AND stripe_payment_intent_id IS NULL)
+  ),
+  FOREIGN KEY (organization_id)
+    REFERENCES organizations(id) ON UPDATE RESTRICT ON DELETE RESTRICT
 ) STRICT;
 
 CREATE TABLE IF NOT EXISTS catalog_items (
@@ -85,6 +137,57 @@ CREATE UNIQUE INDEX IF NOT EXISTS mandates_one_active_per_buyer
   ON mandates(buyer_organization_id)
   WHERE state = 'active';
 
+CREATE TRIGGER IF NOT EXISTS mandates_reject_immutable_update
+BEFORE UPDATE OF
+  id, buyer_organization_id, version, valid_from, valid_until, policy_json,
+  schema_version, policy_hash, created_by_subject, created_at
+ON mandates
+BEGIN
+  SELECT RAISE(ABORT, 'mandate versions are immutable');
+END;
+
+CREATE TRIGGER IF NOT EXISTS mandates_reject_illegal_state_transition
+BEFORE UPDATE OF state ON mandates
+WHEN NEW.state <> OLD.state
+  AND NOT (
+    OLD.state = 'active'
+    AND NEW.state IN ('superseded', 'revoked')
+  )
+BEGIN
+  SELECT RAISE(ABORT, 'illegal mandate state transition');
+END;
+
+CREATE TRIGGER IF NOT EXISTS mandates_reject_delete
+BEFORE DELETE ON mandates
+BEGIN
+  SELECT RAISE(ABORT, 'mandate versions are immutable');
+END;
+
+CREATE TABLE IF NOT EXISTS order_denials (
+  buyer_organization_id TEXT NOT NULL,
+  requester_subject TEXT NOT NULL
+    CHECK (length(requester_subject) BETWEEN 1 AND 256),
+  idempotency_key TEXT NOT NULL CHECK (length(idempotency_key) = 36),
+  request_hash TEXT NOT NULL CHECK (
+    length(request_hash) = 64
+    AND request_hash NOT GLOB '*[^0-9a-f]*'
+  ),
+  policy_reasons_json TEXT NOT NULL CHECK (
+    json_valid(policy_reasons_json)
+    AND json_type(policy_reasons_json) = 'array'
+  ),
+  created_at TEXT NOT NULL CHECK (
+    created_at GLOB '????-??-??T??:??:??*Z'
+  ),
+  PRIMARY KEY (
+    buyer_organization_id,
+    requester_subject,
+    idempotency_key
+  ),
+  FOREIGN KEY (buyer_organization_id)
+    REFERENCES organizations(id) ON UPDATE RESTRICT ON DELETE RESTRICT
+) STRICT;
+
 CREATE TABLE IF NOT EXISTS orders (
   id TEXT PRIMARY KEY CHECK (length(id) BETWEEN 1 AND 128),
   buyer_organization_id TEXT NOT NULL,
@@ -130,8 +233,7 @@ CREATE TABLE IF NOT EXISTS orders (
     json_valid(policy_reasons_json)
     AND json_type(policy_reasons_json) = 'array'
   ),
-  idempotency_key TEXT NOT NULL
-    CHECK (length(idempotency_key) BETWEEN 1 AND 128),
+  idempotency_key TEXT NOT NULL CHECK (length(idempotency_key) = 36),
   request_hash TEXT NOT NULL CHECK (
     length(request_hash) = 64
     AND request_hash NOT GLOB '*[^0-9a-f]*'
@@ -157,6 +259,9 @@ CREATE TABLE IF NOT EXISTS orders (
   stripe_payment_intent_id TEXT UNIQUE CHECK (
     stripe_payment_intent_id IS NULL
     OR length(stripe_payment_intent_id) BETWEEN 1 AND 128
+  ),
+  wallet_paid_at TEXT CHECK (
+    wallet_paid_at IS NULL OR wallet_paid_at GLOB '????-??-??T??:??:??*Z'
   ),
   created_at TEXT NOT NULL
     DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
@@ -225,6 +330,11 @@ CREATE TABLE IF NOT EXISTS orders (
   CHECK (
     status NOT IN ('paid', 'payment_failed')
     OR stripe_payment_intent_id IS NOT NULL
+    OR (status = 'paid' AND wallet_paid_at IS NOT NULL)
+  ),
+  CHECK (
+    wallet_paid_at IS NULL
+    OR (status = 'paid' AND stripe_payment_intent_id IS NULL)
   ),
   FOREIGN KEY (mandate_id, buyer_organization_id, mandate_version, mandate_hash)
     REFERENCES mandates(id, buyer_organization_id, version, policy_hash)
@@ -233,6 +343,18 @@ CREATE TABLE IF NOT EXISTS orders (
     REFERENCES catalog_items(id, supplier_organization_id)
     ON UPDATE RESTRICT ON DELETE RESTRICT
 ) STRICT;
+
+CREATE TRIGGER IF NOT EXISTS orders_reject_snapshot_update
+BEFORE UPDATE OF
+  id, buyer_organization_id, supplier_organization_id, requester_subject,
+  mandate_id, mandate_version, mandate_hash, catalog_item_id,
+  catalog_item_version, sku, product_key, category, unit, unit_price, quantity,
+  currency, total, delivery_location_id, policy_decision, policy_reasons_json,
+  idempotency_key, request_hash, approval_expires_at, created_at
+ON orders
+BEGIN
+  SELECT RAISE(ABORT, 'order snapshot is immutable');
+END;
 
 CREATE INDEX IF NOT EXISTS orders_buyer_status
   ON orders(buyer_organization_id, status, created_at);

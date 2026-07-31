@@ -1,343 +1,179 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
-type Status = "review" | "payment" | "paid" | "rejected";
+import type { DashboardSnapshot } from "../src/dashboard";
 
-const baseEvents = [
-  {
-    time: "14:02:11",
-    title: "Agent identity verified",
-    actor: "Auth0",
-    detail: "org_ju4 · inventory-agent-prod · orders:create",
-  },
-  {
-    time: "14:02:12",
-    title: "Eligible offers compared",
-    actor: "Mandate",
-    detail: "3 offers · exact unit match · sufficient stock",
-  },
-  {
-    time: "14:02:12",
-    title: "Human approval requested",
-    actor: "Policy M-104 v7",
-    detail: "ORDER_LIMIT_EXCEEDED · PERIOD_BUDGET_EXCEEDED",
-  },
-] as const;
+type Status = "review" | "payment" | "paid" | "failed" | "rejected";
 
-const statusCopy: Record<Status, { label: string; description: string }> = {
-  review: {
-    label: "Human approval required",
-    description: "$134 beyond this agent’s autonomous authority.",
-  },
-  payment: {
-    label: "Approved · payment pending",
-    description: "Waiting for a signed Stripe webhook.",
-  },
-  paid: {
-    label: "Paid",
-    description: "Stripe confirmed the exact approved order.",
-  },
-  rejected: {
-    label: "Rejected",
-    description: "The order is closed and its budget hold was released.",
-  },
-};
+function initialStatus(status: string | undefined): Status {
+  if (status === "paid") return "paid";
+  if (status === "payment_pending") return "payment";
+  if (status === "payment_failed" || status === "cancelled") return "failed";
+  if (status && ["rejected", "expired", "stale"].includes(status)) {
+    return "rejected";
+  }
+  return "review";
+}
 
-export function ApprovalDemo() {
-  const [status, setStatus] = useState<Status>("review");
+function money(minor: number, currency = "USD"): string {
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency,
+    maximumFractionDigits: 2,
+  }).format(minor / 100);
+}
+
+export function ApprovalDemo({
+  snapshot,
+}: Readonly<{ snapshot: DashboardSnapshot }>) {
+  const { order } = snapshot;
+  const [status, setStatus] = useState<Status>(initialStatus(order?.status));
   const [note, setNote] = useState("");
-  const [decisionNote, setDecisionNote] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
 
-  const decide = (nextStatus: "payment" | "rejected") => {
-    setDecisionNote(note.trim());
-    setStatus(nextStatus);
+  useEffect(() => {
+    if (!order || status !== "payment") return;
+    const controller = new AbortController();
+    const checkPayment = async () => {
+      const response = await fetch(`/api/orders/${order.id}/approval`, {
+        cache: "no-store",
+        signal: controller.signal,
+      });
+      if (!response.ok) return;
+      const payload = await response.json() as { data?: { status?: string } };
+      if (payload.data?.status === "paid") window.location.reload();
+      if (["payment_failed", "cancelled"].includes(payload.data?.status ?? "")) {
+        setStatus("failed");
+      }
+    };
+    void checkPayment().catch(() => setError("Could not refresh payment status"));
+    const timer = window.setInterval(
+      () => void checkPayment().catch(() => setError("Could not refresh payment status")),
+      750,
+    );
+    return () => {
+      controller.abort();
+      window.clearInterval(timer);
+    };
+  }, [order, status]);
+
+  const decide = async (decision: "approve" | "reject") => {
+    if (!order || busy) return;
+    setBusy(true);
+    setError("");
+    try {
+      const response = await fetch(`/api/orders/${order.id}/approval`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ decision, reason: note.trim() || undefined }),
+      });
+      const payload = await response.json() as {
+        data?: { status?: string };
+        error?: { message?: string };
+      };
+      if (!response.ok) {
+        throw new Error(payload.error?.message || "Decision failed");
+      }
+      setStatus(payload.data?.status === "rejected" ? "rejected" : "payment");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Decision failed");
+    } finally {
+      setBusy(false);
+    }
   };
 
-  const reset = () => {
-    setStatus("review");
-    setNote("");
-    setDecisionNote("");
-  };
-
-  const events = [
-    ...baseEvents,
-    ...(status === "payment" || status === "paid"
-      ? [
-          {
-            time: "14:03:04",
-            title: "Purchase approved",
-            actor: "Maya Chen · Procurement lead",
-            detail: decisionNote || "Approved against the frozen order snapshot",
-          },
-          {
-            time: "14:03:05",
-            title: "PaymentIntent created",
-            actor: "Stripe test mode",
-            detail: "pi_3Mandate2048 · $384.00 USD",
-          },
-        ]
-      : []),
-    ...(status === "paid"
-      ? [
-          {
-            time: "14:03:06",
-            title: "Signed webhook verified · order paid",
-            actor: "Mandate webhook",
-            detail: "payment_intent.succeeded · evt_mandate_2048",
-          },
-        ]
-      : []),
-    ...(status === "rejected"
-      ? [
-          {
-            time: "14:03:04",
-            title: "Purchase rejected",
-            actor: "Maya Chen · Procurement lead",
-            detail: decisionNote || "Rejected by authorized approver",
-          },
-        ]
-      : []),
-  ];
+  if (!order) {
+    return (
+      <div className="empty-state">
+        <h2>No orders yet.</h2>
+        <a href="/dashboard">Source low-stock inventory →</a>
+      </div>
+    );
+  }
 
   return (
-    <>
-      <section className="approval-section" id="request">
-        <div className="section-bar frame">
-          <span>04/</span>
-          <span>Approval desk</span>
-        </div>
-
-        <div className="approval-intro frame">
-          <h2>
-            A verified restaurant agent wants{" "}
-            <span>18 cases of avocados</span> from{" "}
-            <span>Greenline Produce</span> for <span>$384.</span>
-          </h2>
-        </div>
-
-        <div className="approval-shell frame">
-          <div className="request-column">
-            <div className="request-heading">
-              <div>
-                <p className="screen-label">REQ-2048 · requested 2 minutes ago</p>
-                <h3>Hass avocados</h3>
-              </div>
-              <div className={`request-status status-${status}`}>
-                <span className="status-dot" aria-hidden="true">
-                  ●
-                </span>
-                {statusCopy[status].label}
-              </div>
-            </div>
-
-            <dl className="request-facts">
-              <div>
-                <dt>Requester</dt>
-                <dd>inventory-agent-prod</dd>
-              </div>
-              <div>
-                <dt>Representing</dt>
-                <dd>Juniper Table Group</dd>
-              </div>
-              <div>
-                <dt>Quantity</dt>
-                <dd>18 cases</dd>
-              </div>
-              <div>
-                <dt>Deliver to</dt>
-                <dd>Mission District Kitchen · Today by 5 PM</dd>
-              </div>
-            </dl>
-
-            <table className="offer-table">
-              <caption className="sr-only">Supplier offers</caption>
-              <thead>
-                <tr className="offer-row offer-head">
-                  <th scope="col">Eligible supplier</th>
-                  <th scope="col">Total</th>
-                  <th scope="col">Result</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr className="offer-row offer-selected">
-                  <td>Greenline Produce</td>
-                  <td>
-                    <strong>$384</strong>
-                  </td>
-                  <td>Selected · lowest</td>
-                </tr>
-                <tr className="offer-row">
-                  <td>Suncrest Foods</td>
-                  <td>
-                    <strong>$402</strong>
-                  </td>
-                  <td>+$18</td>
-                </tr>
-                <tr className="offer-row">
-                  <td>Orchard Market</td>
-                  <td>
-                    <strong>$414</strong>
-                  </td>
-                  <td>+$30</td>
-                </tr>
-              </tbody>
-            </table>
-
-            <details className="evidence-details">
-              <summary>Why Greenline was selected</summary>
-              <p>
-                Approved supplier, exact case unit, sufficient advisory stock,
-                valid delivery location, USD match, and the lowest total.
-              </p>
-            </details>
+    <div className="order-workspace">
+      <section className="order-summary">
+        <div className="panel-heading">
+          <div>
+            <p className="eyebrow">Order · {order.id.slice(0, 8)}</p>
+            <h2>🥑 {order.productName}</h2>
           </div>
+          <span className={`order-status status-${status}`}>● {
+            status === "review" ? "Approval required" :
+            status === "payment" ? "Wallet settling" :
+            status === "paid" ? "Paid" :
+            status === "failed" ? "Payment failed" : "Rejected"
+          }</span>
+        </div>
 
-          <aside className="decision-column" aria-labelledby="decision-title">
-            <div>
-              <p className="screen-label">Policy decision · M-104 v7</p>
-              <h3 id="decision-title">{statusCopy[status].label}</h3>
-              <p className="decision-summary">
-                {statusCopy[status].description}
-              </p>
-            </div>
+        <dl className="order-facts">
+          <div><dt>Agent</dt><dd>{order.requester}</dd></div>
+          <div><dt>Supplier</dt><dd>{order.supplierName}</dd></div>
+          <div><dt>Quantity</dt><dd>{order.quantity} {order.unit}s</dd></div>
+          <div><dt>Total</dt><dd>{money(order.totalMinor, order.currency)}</dd></div>
+          <div><dt>Deliver to</dt><dd>{order.deliveryLocation.replaceAll("-", " ")}</dd></div>
+          <div><dt>Mandate</dt><dd>M-104 v{order.mandateVersion}</dd></div>
+        </dl>
 
-            <dl className="policy-ledger">
-              <div>
-                <dt>Order total</dt>
-                <dd>$384</dd>
-              </div>
-              <div>
-                <dt>Autonomous limit</dt>
-                <dd>$250</dd>
-              </div>
-              <div>
-                <dt>Budget remaining</dt>
-                <dd>$220</dd>
-              </div>
-              <div>
-                <dt>Hard exception limit</dt>
-                <dd>$1,000</dd>
-              </div>
-            </dl>
+        <a className="inline-route-link" href="/dashboard/suppliers">
+          View all vendor offers →
+        </a>
+      </section>
 
-            <section
-              className="policy-checks"
-              aria-labelledby="policy-evidence-title"
+      <aside className="payment-panel">
+        <p className="eyebrow">Prepaid wallet payment</p>
+        <h2>{money(snapshot.wallet.availableMinor)}</h2>
+        <p>Available to the agent. Card and bank details remain server-side.</p>
+
+        <dl className="payment-flow">
+          <div><dt>1</dt><dd>Stripe securely funds the wallet</dd></div>
+          <div><dt>2</dt><dd>Human or mandate approves the spend</dd></div>
+          <div><dt>3</dt><dd>Backend debits the wallet atomically</dd></div>
+        </dl>
+
+        {status === "review" && (
+          <div className="decision-actions">
+            <label htmlFor="decision-note">Approval note · optional</label>
+            <textarea
+              id="decision-note"
+              value={note}
+              onChange={(event) => setNote(event.target.value)}
+              rows={3}
+              placeholder="Add context for the audit trail"
+            />
+            <button
+              className="primary-action"
+              type="button"
+              disabled={busy}
+              onClick={() => void decide("approve")}
             >
-              <h4 className="sr-only" id="policy-evidence-title">
-                Policy evidence
-              </h4>
-              <p>✓ Supplier allowed</p>
-              <p>✓ Category allowed</p>
-              <p>✓ USD required</p>
-              <p>✓ Delivery allowed</p>
-              <code>ORDER_LIMIT_EXCEEDED</code>
-              <code>PERIOD_BUDGET_EXCEEDED</code>
-            </section>
-
-            <div className="decision-actions" aria-live="polite">
-              {status === "review" && (
-                <>
-                  <label htmlFor="decision-note">Decision note · optional</label>
-                  <textarea
-                    id="decision-note"
-                    value={note}
-                    onChange={(event) => setNote(event.target.value)}
-                    placeholder="Add context for the audit trail"
-                    rows={3}
-                  />
-                  <button
-                    className="primary-action"
-                    type="button"
-                    onClick={() => decide("payment")}
-                  >
-                    Approve $384 purchase&nbsp; →
-                  </button>
-                  <button
-                    className="secondary-action"
-                    type="button"
-                    onClick={() => decide("rejected")}
-                  >
-                    Reject request
-                  </button>
-                </>
-              )}
-
-              {status === "payment" && (
-                <>
-                  <p className="action-message">
-                    Approval is recorded. Payment remains pending until the
-                    signed event arrives.
-                  </p>
-                  <button
-                    className="primary-action"
-                    type="button"
-                    onClick={() => setStatus("paid")}
-                  >
-                    Simulate verified Stripe webhook&nbsp; →
-                  </button>
-                  <button
-                    className="secondary-action"
-                    type="button"
-                    onClick={reset}
-                  >
-                    Reset demo
-                  </button>
-                </>
-              )}
-
-              {(status === "paid" || status === "rejected") && (
-                <>
-                  <p className="action-message">
-                    {status === "paid"
-                      ? "The audit trail now includes the verified payment event."
-                      : "No PaymentIntent was created."}
-                  </p>
-                  <button
-                    className="secondary-action"
-                    type="button"
-                    onClick={reset}
-                  >
-                    Reset demo
-                  </button>
-                </>
-              )}
-            </div>
-          </aside>
-        </div>
-      </section>
-
-      <section className="audit-section neutral-section" id="audit">
-        <div className="section-bar frame">
-          <span>05/</span>
-          <span>Audit trail</span>
-        </div>
-
-        <div className="audit-content frame">
-          <h2>
-            Every decision
-            <br />
-            <span>leaves a receipt.</span>
-          </h2>
-
-          <div className="audit-list">
-            {events.map((event) => (
-              <details
-                className="audit-event"
-                key={`${event.time}-${event.title}`}
-              >
-                <summary>
-                  <time>{event.time}</time>
-                  <strong>{event.title}</strong>
-                  <span>{event.actor}</span>
-                </summary>
-                <p>{event.detail}</p>
-              </details>
-            ))}
+              {busy ? "Processing…" : `Approve wallet payment ${money(order.totalMinor, order.currency)} →`}
+            </button>
+            <button
+              className="secondary-action"
+              type="button"
+              disabled={busy}
+              onClick={() => void decide("reject")}
+            >
+              Reject order
+            </button>
           </div>
-        </div>
-      </section>
-    </>
+        )}
+        {status === "payment" && <p className="payment-proof">Debiting the funded wallet…</p>}
+        {status === "paid" && (
+          <p className="payment-proof">
+            {order.paymentIntentId
+              ? `✓ Paid directly by Stripe · …${order.paymentIntentId.slice(-10)}`
+              : "✓ Paid from the Stripe-funded wallet"}
+          </p>
+        )}
+        {status === "failed" && <p className="action-message">Stripe did not complete payment.</p>}
+        {status === "rejected" && <p className="action-message">No payment was created.</p>}
+        {error && <p className="action-message" role="alert">{error}</p>}
+      </aside>
+    </div>
   );
 }

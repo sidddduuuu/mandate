@@ -1,0 +1,66 @@
+{
+  "version": 1,
+  "project": {
+    "catalog": "prod",
+    "initializedAt": "2026-07-31T00:30:02.795Z",
+    "merchantDisplayName": "Mandate",
+    "merchantId": "acct_1Tz3ijPRMWxS6fjC",
+    "projectId": "project_61V8SIEGeigaoVBlq16V8Rg51gSQdlMGcQLwhq8jgSMi",
+    "projectName": "mandate"
+  },
+  "providers": {
+    "auth0": {
+      "accountRequestId": "facctrq_61V8SW6ZLtInTZUPL16V8Rg51gSQdlMGcQLwhq8jgPYG",
+      "configuration": {
+        "locality": "us",
+        "naming_prefix": "mandate-demo"
+      },
+      "linkedAt": "2026-07-31T00:44:28.297Z",
+      "providerId": "prvdr_61UVctyxfLOj4FpVw5Bmi",
+      "providerName": "Auth0",
+      "redirectUrl": null,
+      "requestedAt": "2026-07-31T00:44:28.297Z",
+      "status": "complete"
+    }
+  },
+  "resources": {
+    "auth0": {
+      "configuration": {
+        "name": "Mandate Local Demo",
+        "callbacks": [
+          "http://localhost:3000/auth/callback"
+        ],
+        "allowed_logout_urls": [
+          "http://localhost:3000"
+        ]
+      },
+      "createdAt": "2026-07-31T00:44:41.167Z",
+      "lastRevealedAt": "2026-07-31T00:53:02.762Z",
+      "lastStatus": "complete",
+      "name": "auth0",
+      "providerId": "prvdr_61UVctyxfLOj4FpVw5Bmi",
+      "providerName": "Auth0",
+      "resourceId": "fres_61V8SWLYe05tVhL4k16V8Rg51gSQdlMGcQLwhq8jgJLE",
+      "serviceId": "client"
+    },
+    "auth0-plan": {
+      "configuration": {},
+      "createdAt": "2026-07-31T00:44:32.112Z",
+      "lastRevealedAt": "2026-07-31T00:44:32.345Z",
+      "lastStatus": "complete",
+      "name": "auth0-plan",
+      "providerId": "prvdr_61UVctyxfLOj4FpVw5Bmi",
+      "providerName": "Auth0",
+      "resourceId": "fres_61V8SWDjyrOTlcrjI16V8Rg51gSQdlMGcQLwhq8jgKHw",
+      "serviceId": "free"
+    }
+  },
+  "managedProjectVariableEnvKeys": {
+    ".env": [
+      "APP_BASE_URL",
+      "AUTH0_SECRET",
+      "STRIPE_SECRET_KEY",
+      "STRIPE_WEBHOOK_SECRET"
+    ]
+  }
+}

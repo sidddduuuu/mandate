@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { NextResponse } from "next/server.js";
-import type { ZodType } from "zod";
+import { type ZodType } from "zod";
+import { AuthError } from "./auth/context.ts";
+import type { Database } from "./db.ts";
 
 export class ApiError extends Error {
   readonly status: number;
@@ -11,6 +13,14 @@ export class ApiError extends Error {
     this.status = status;
     this.code = code;
   }
+}
+
+export function parseRequest<T>(schema: ZodType<T>, input: unknown): T {
+  const result = schema.safeParse(input);
+  if (!result.success) {
+    throw new ApiError(400, "INVALID_REQUEST", "Request is invalid");
+  }
+  return result.data;
 }
 
 export async function readJson<T>(
@@ -35,11 +45,7 @@ export async function readJson<T>(
     throw new ApiError(400, "INVALID_JSON", "Request body must be valid JSON");
   }
 
-  const result = schema.safeParse(value);
-  if (!result.success) {
-    throw new ApiError(400, "INVALID_REQUEST", "Request body is invalid");
-  }
-  return result.data;
+  return parseRequest(schema, value);
 }
 
 export function ok(data: unknown, status = 200): NextResponse {
@@ -55,39 +61,119 @@ export async function route(
     response.headers.set("x-request-id", requestId);
     return response;
   } catch (error) {
+    const auth = error instanceof AuthError;
     const known = error instanceof ApiError;
+    const status = known
+      ? error.status
+      : auth
+        ? error.code === "forbidden"
+          ? 403
+          : error.code === "invalid_configuration"
+            ? 503
+            : 401
+        : 500;
+    const code = known
+      ? error.code
+      : auth
+        ? error.code === "forbidden"
+          ? "FORBIDDEN"
+          : error.code === "invalid_configuration"
+            ? "AUTH_UNAVAILABLE"
+            : "UNAUTHORIZED"
+        : "INTERNAL_ERROR";
+    const message = known
+      ? error.message
+      : auth
+        ? error.code === "invalid_configuration"
+          ? "Authentication is unavailable"
+          : "Unauthorized"
+        : "The request could not be completed";
     const response = NextResponse.json(
       {
         error: {
-          code: known ? error.code : "INTERNAL_ERROR",
-          message: known ? error.message : "The request could not be completed",
+          code,
+          message,
           request_id: requestId,
         },
       },
-      { status: known ? error.status : 500 },
+      { status },
     );
+    if (status === 401) response.headers.set("www-authenticate", "Bearer");
     response.headers.set("x-request-id", requestId);
     return response;
   }
 }
 
-const windows = new Map<string, { count: number; resetsAt: number }>();
-
-export function rateLimit(
+export async function rateLimit(
+  database: Database,
   subject: string,
   limit = 60,
   windowMs = 60_000,
-  now = Date.now(),
-): void {
-  const current = windows.get(subject);
-  if (!current || current.resetsAt <= now) {
-    windows.set(subject, { count: 1, resetsAt: now + windowMs });
-    return;
+): Promise<void> {
+  if (
+    !subject
+    || subject.length > 512
+    || !Number.isSafeInteger(limit)
+    || limit < 1
+    || !Number.isSafeInteger(windowMs)
+    || windowMs < 1
+  ) {
+    throw new TypeError("Rate limit configuration is invalid");
   }
-  if (current.count >= limit) {
+  const sqlite = "prepare" in database;
+  const modifier = `+${windowMs / 1_000} seconds`;
+  const row = await database.get(
+    sqlite
+      ? `
+        INSERT INTO rate_limit_windows AS current (
+          key, request_count, resets_at
+        ) VALUES (
+          ?, 1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now', ?)
+        )
+        ON CONFLICT (key) DO UPDATE SET
+          request_count = CASE
+            WHEN current.resets_at <= strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+              THEN 1
+            WHEN current.request_count <= ? THEN current.request_count + 1
+            ELSE current.request_count
+          END,
+          resets_at = CASE
+            WHEN current.resets_at <= strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+              THEN strftime('%Y-%m-%dT%H:%M:%fZ', 'now', ?)
+            ELSE current.resets_at
+          END
+        RETURNING request_count
+      `
+      : `
+        INSERT INTO rate_limit_windows AS current (
+          key, request_count, resets_at
+        ) VALUES (
+          ?, 1, statement_timestamp() + ?::double precision * interval '1 millisecond'
+        )
+        ON CONFLICT (key) DO UPDATE SET
+          request_count = CASE
+            WHEN current.resets_at <= statement_timestamp() THEN 1
+            WHEN current.request_count <= ? THEN current.request_count + 1
+            ELSE current.request_count
+          END,
+          resets_at = CASE
+            WHEN current.resets_at <= statement_timestamp()
+              THEN statement_timestamp() + ?::double precision * interval '1 millisecond'
+            ELSE current.resets_at
+          END
+        RETURNING request_count
+      `,
+    ...(sqlite
+      ? [subject, modifier, limit, modifier]
+      : [subject, windowMs, limit, windowMs]),
+  );
+  const count = Number(row?.request_count);
+  if (!Number.isSafeInteger(count) || count < 1) {
+    throw new Error("Rate limit update returned an invalid count");
+  }
+  if (count > limit) {
     throw new ApiError(429, "RATE_LIMITED", "Too many requests");
   }
-  current.count += 1;
 }
 
 export function requireSameOrigin(request: Request): void {
