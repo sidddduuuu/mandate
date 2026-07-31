@@ -37,6 +37,9 @@ const accountSchema = z.object({
   }).passthrough().optional(),
 }).passthrough();
 
+// ponytail: US-only MVP; store supplier country when cross-border onboarding is added.
+const CONNECTED_ACCOUNT_COUNTRY = "US";
+
 type Account = z.output<typeof accountSchema>;
 
 export type ConnectClient = Readonly<{
@@ -65,7 +68,7 @@ export type SupplierPaymentStatus = Readonly<{
   payoutReady: boolean;
 }>;
 
-type Supplier = Readonly<{ id: string; name: string }>;
+type Supplier = Readonly<{ id: string; name: string; contactEmail?: string }>;
 
 function unavailable(): ApiError {
   return new ApiError(
@@ -101,7 +104,11 @@ async function requireSupplier(
   if (typeof row?.id !== "string" || typeof row.name !== "string" || row.kind !== "supplier") {
     throw new AuthError("forbidden");
   }
-  return Object.freeze({ id: row.id, name: row.name });
+  return Object.freeze({
+    id: row.id,
+    name: row.name,
+    ...(actor.contactEmail ? { contactEmail: actor.contactEmail } : {}),
+  });
 }
 
 function transferStatus(account: Account): string {
@@ -228,8 +235,17 @@ async function createAccount(
   supplier: Supplier,
   client: ConnectClient,
 ): Promise<Account> {
+  if (!supplier.contactEmail) {
+    throw new ApiError(
+      422,
+      "SUPPLIER_EMAIL_REQUIRED",
+      "Supplier contact email is required",
+    );
+  }
   const account = parseSupplierAccount(await client.accounts.create({
+    contact_email: supplier.contactEmail,
     display_name: supplier.name,
+    identity: { country: CONNECTED_ACCOUNT_COUNTRY },
     dashboard: "express",
     defaults: {
       responsibilities: {

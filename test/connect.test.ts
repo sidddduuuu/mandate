@@ -23,6 +23,7 @@ function actor(organizationId: string): ActorContext {
   return Object.freeze({
     organizationId,
     actorType: "human",
+    contactEmail: "supplier@test.com",
     scopes: Object.freeze(["orders:read"]),
     subject: `${organizationId}@test`,
   });
@@ -84,6 +85,8 @@ test("supplier onboarding creates one Accounts v2 recipient and exposes no accou
     accounts: {
       create: async (params, options) => {
         accountCreates += 1;
+        assert.equal(params.contact_email, "supplier@test.com");
+        assert.equal(params.identity?.country, "US");
         assert.equal(params.dashboard, "express");
         assert.equal(params.defaults?.responsibilities?.fees_collector, "application");
         assert.equal(params.defaults?.responsibilities?.losses_collector, "application");

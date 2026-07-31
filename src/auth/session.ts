@@ -10,6 +10,7 @@ export type HumanSessionRequirements = Readonly<{
 type HumanClaims = Readonly<{
   sub?: unknown;
   org_id?: unknown;
+  email?: unknown;
   permissions?: unknown;
   scope?: unknown;
 }>;
@@ -36,6 +37,7 @@ export function humanClaimsFromSession(session: SessionClaims): HumanClaims {
   return Object.freeze({
     sub: session.user.sub,
     org_id: session.user.org_id ?? (demo ? DEMO_ORGANIZATION_ID : undefined),
+    email: session.user.email,
     permissions: demo ? DEMO_PERMISSIONS : session.user.permissions,
     scope: [session.user.scope, session.tokenSet.scope]
       .filter((value): value is string => typeof value === "string")
@@ -54,7 +56,7 @@ export function actorFromHumanClaims(
     throw new AuthError("invalid_token");
   }
 
-  const { sub, org_id: organizationId, permissions, scope } = claims as HumanClaims;
+  const { sub, org_id: organizationId, email, permissions, scope } = claims as HumanClaims;
   if (
     typeof sub !== "string" ||
     !sub.trim() ||
@@ -73,6 +75,14 @@ export function actorFromHumanClaims(
   if (scope !== undefined && typeof scope !== "string") {
     throw new AuthError("invalid_token");
   }
+  if (
+    email !== undefined
+    && (
+      typeof email !== "string"
+      || email.length > 254
+      || !/^[^\s@]+@[^\s@]+$/.test(email)
+    )
+  ) throw new AuthError("invalid_token");
 
   const scopes = Object.freeze([
     ...new Set([
@@ -89,6 +99,7 @@ export function actorFromHumanClaims(
     organizationId,
     actorType: "human",
     scopes,
+    ...(typeof email === "string" ? { contactEmail: email } : {}),
   });
 }
 

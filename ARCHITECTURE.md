@@ -87,6 +87,18 @@ These are code boundaries inside one application, not network services.
 Route handlers validate and adapt HTTP input, then call feature functions.
 Only the order workflow coordinates domain state and external payment effects.
 
+### Stripe Connect test configuration
+
+Supplier accounts use Accounts v2 recipient configuration with Dashboard:
+Express, fee collection managed by Mandate, negative balance liability owned by
+Mandate, and only `stripe_balance.stripe_transfers` requested. The MVP creates
+US accounts; cross-border supplier onboarding is deferred.
+
+Before testing, acknowledge platform negative-balance liability in the Stripe
+test-mode Connect platform profile. Configure test or restricted secret and
+publishable keys through `STRIPE_SECRET_KEY` and
+`NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY`; never commit their values.
+
 ## Security invariants
 
 These rules are implementation blockers, not recommendations:

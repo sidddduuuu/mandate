@@ -15,6 +15,7 @@ export type ActorContext = Readonly<{
   organizationId: string;
   actorType: ActorType;
   scopes: readonly string[];
+  contactEmail?: string;
 }>;
 
 export type AuthRequirements = Readonly<{

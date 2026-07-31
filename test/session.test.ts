@@ -12,6 +12,7 @@ import { ApiError } from "../src/http.ts";
 const claims = {
   sub: "auth0|human-test",
   org_id: "org_buyer_test",
+  email: "buyer@test.com",
   permissions: ["approvals:read"],
   scope: "openid orders:read",
 };
@@ -27,6 +28,7 @@ test("creates a frozen human actor from session claims", () => {
     organizationId: "org_buyer_test",
     actorType: "human",
     scopes: ["approvals:read", "openid", "orders:read"],
+    contactEmail: "buyer@test.com",
   });
   assert.ok(Object.isFrozen(actor));
   assert.ok(Object.isFrozen(actor.scopes));
@@ -85,6 +87,7 @@ test("demo mode keeps Auth0 identity and supplies local authorization", () => {
       {
         sub: "auth0|real-user",
         org_id: "demo_buyer_juniper",
+        email: undefined,
         permissions: [
           "mandates:write",
           "approvals:read",
