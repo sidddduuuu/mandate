@@ -1,3 +1,4 @@
+import { randomUUID } from "crypto";
 import Stripe from "stripe";
 import { getConfig } from "../lib/config";
 import { AppError } from "../lib/http";
@@ -99,7 +100,6 @@ export function createMemoryStripeAdapter(): StripeAdapter & {
 } {
   const intents = new Map<string, PaymentIntentState & { canceled?: boolean }>();
   const createKeys = new Map<string, string>();
-  let seq = 0;
   const api: StripeAdapter & {
     intents: Map<string, PaymentIntentState & { canceled?: boolean }>;
     events: Stripe.Event[];
@@ -114,7 +114,9 @@ export function createMemoryStripeAdapter(): StripeAdapter & {
       }
       const existingId = createKeys.get(input.idempotencyKey);
       if (existingId) return intents.get(existingId)!;
-      const id = `pi_test_${++seq}`;
+      // UUID ids avoid collisions when the adapter is recreated after HMR /
+      // process restarts while SQLite still has prior pi_test_* rows.
+      const id = `pi_test_${randomUUID()}`;
       const state: PaymentIntentState = {
         id,
         status: "requires_confirmation",
