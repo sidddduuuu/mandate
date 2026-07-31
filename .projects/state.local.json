@@ -1,0 +1,49 @@
+{
+  "version": 1,
+  "project": {
+    "catalog": "prod",
+    "initializedAt": "2026-07-31T00:27:28.526Z",
+    "merchantDisplayName": "Huetic",
+    "merchantId": "acct_1TLBEdAbn6sGifV3",
+    "projectId": "project_61V8SFk6GImsTaVAA16UUZBz1iSQbaD7vCryDHCkyNY8",
+    "projectName": "mandate"
+  },
+  "providers": {
+    "auth0": {
+      "accountRequestId": "fprvcnn_61V8Qbpu39TsHpxuQ16UUZBz1iSQbaD7vCryDHCkyLXM",
+      "configuration": {},
+      "linkedAt": "2026-07-30T22:42:09.747Z",
+      "providerId": "prvdr_61UVctyxfLOj4FpVw5Bmi",
+      "providerName": "Auth0",
+      "redirectUrl": null,
+      "requestedAt": "2026-07-30T22:42:09.747Z",
+      "status": "complete"
+    }
+  },
+  "resources": {
+    "auth0-plan": {
+      "configuration": {},
+      "createdAt": "2026-07-31T00:27:57.882Z",
+      "lastRevealedAt": "2026-07-31T00:27:58.029Z",
+      "lastStatus": "complete",
+      "name": "auth0-plan",
+      "providerId": "prvdr_61UVctyxfLOj4FpVw5Bmi",
+      "providerName": "Auth0",
+      "resourceId": "fres_61V8SGAtnFPtQr43U16UUZBz1iSQbaD7vCryDHCkyVLs",
+      "serviceId": "free"
+    },
+    "mandate": {
+      "configuration": {
+        "name": "mandate"
+      },
+      "createdAt": "2026-07-31T00:28:02.061Z",
+      "lastRevealedAt": "2026-07-31T00:28:02.215Z",
+      "lastStatus": "complete",
+      "name": "mandate",
+      "providerId": "prvdr_61UVctyxfLOj4FpVw5Bmi",
+      "providerName": "Auth0",
+      "resourceId": "fres_61V8SGEmao3gzCuaN16UUZBz1iSQbaD7vCryDHCky7R2",
+      "serviceId": "client"
+    }
+  }
+}
