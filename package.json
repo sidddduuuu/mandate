@@ -20,6 +20,7 @@
   "dependencies": {
     "@auth0/nextjs-auth0": "4.26.0",
     "@neondatabase/serverless": "^1.0.2",
+    "@stripe/connect-js": "^3.4.6",
     "jose": "6.2.5",
     "next": "16.2.12",
     "react": "19.2.8",

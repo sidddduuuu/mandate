@@ -16,6 +16,11 @@ import {
   evaluatePolicy,
   type PolicyDecision,
 } from "./policy.ts";
+import {
+  reserveOffer,
+  selectOffer,
+  type ReservableOffer as Offer,
+} from "./reservations.ts";
 
 const identifier = z.string().trim().min(1).max(128);
 const orderInputSchema = z.object({
@@ -127,17 +132,6 @@ type Mandate = Readonly<{
   validFrom: string;
   validUntil: string;
   policy: MandatePolicyData;
-}>;
-type Offer = Readonly<{
-  id: string;
-  supplierOrganizationId: string;
-  sku: string;
-  productKey: string;
-  category: string;
-  unit: string;
-  unitPriceMinor: number;
-  currency: string;
-  version: number;
 }>;
 type Conflict = Readonly<{ conflict: true }>;
 type StoredDenial = z.output<typeof storedDenialSchema>;
@@ -290,45 +284,6 @@ async function loadMandate(
   } catch {
     return "invalid";
   }
-}
-
-async function selectOffer(
-  database: Database,
-  input: OrderInput,
-  policy: MandatePolicyData,
-  now: string,
-): Promise<Offer | null> {
-  const rows = await database.all(`
-    SELECT id, supplier_organization_id, sku, product_key, category, unit,
-      unit_price, currency, version
-    FROM catalog_items
-    WHERE product_key = ? AND unit = ? AND active = 1
-      AND valid_from <= ? AND valid_until > ?
-      AND advisory_quantity >= ? AND unit_price <= ?
-    ORDER BY unit_price, supplier_organization_id, id
-  `,
-    input.productKey, input.unit, now, now, input.quantity,
-    Math.floor(POLICY_CAPS.orderTotalMinor / input.quantity),
-  );
-  const row = rows.find((candidate) =>
-    policy.allowedSupplierOrgIds.includes(
-      String(candidate.supplier_organization_id),
-    )
-    && policy.allowedCategories.includes(String(candidate.category))
-    && candidate.currency === policy.currency
-  );
-  if (!row) return null;
-  return Object.freeze({
-    id: String(row.id),
-    supplierOrganizationId: String(row.supplier_organization_id),
-    sku: String(row.sku),
-    productKey: String(row.product_key),
-    category: String(row.category),
-    unit: String(row.unit),
-    unitPriceMinor: Number(row.unit_price),
-    currency: String(row.currency),
-    version: Number(row.version),
-  });
 }
 
 function mandateIsActive(mandate: Mandate, now: string): boolean {
@@ -677,6 +632,25 @@ async function persistOrder(
     database, buyerOrganizationId, input, mandate, offer, now,
   );
   const state = newOrderState(evaluated, mandate, now);
+  if (
+    state.status !== "denied"
+    && !await reserveOffer(database, state.id, {
+      id: offer.id,
+      version: offer.version,
+      quantity: input.quantity,
+    }, now)
+  ) {
+    return denyWithoutSnapshot(
+      database,
+      actor,
+      buyerOrganizationId,
+      idempotencyKey,
+      requestHash,
+      requestId,
+      ["NO_ELIGIBLE_OFFER"],
+      now,
+    );
+  }
   await insertOrder(
     database, actor, buyerOrganizationId, input, idempotencyKey, requestHash,
     mandate, offer, state, now,

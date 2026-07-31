@@ -130,6 +130,8 @@ function orderWorker(
   databasePath: string,
   idempotencyKey: string,
   requestId: string,
+  organizationId = "org_buyer",
+  subject = "buyer_agent@test",
 ): Worker {
   return new Worker(new URL("./order-create-worker.ts", import.meta.url), {
     workerData: {
@@ -137,6 +139,8 @@ function orderWorker(
       idempotencyKey,
       requestId,
       now: now.toISOString(),
+      organizationId,
+      subject,
     },
   });
 }
@@ -378,6 +382,56 @@ test("concurrent orders serialize at the remaining-budget boundary", async (cont
     "awaiting_approval",
     "payment_pending",
   ]);
+});
+
+test("concurrent buyers cannot over-reserve one standing offer", async (context) => {
+  const directory = mkdtempSync(join(tmpdir(), "mandate-reservations-"));
+  const databasePath = join(directory, "orders.sqlite");
+  const db = await database({}, databasePath);
+  await createMandate(
+    db,
+    actor("org_buyer_2", "human", ["mandates:write"]),
+    { validFrom, validUntil, policy: policy() },
+    "buyer-2-mandate",
+    now,
+  );
+  await db.run(
+    "UPDATE catalog_items SET advisory_quantity = 10 WHERE id = 'offer-a'",
+  );
+  await db.run("UPDATE catalog_items SET active = 0 WHERE id = 'offer-b'");
+  db.close();
+  context.after(() => rmSync(directory, { force: true, recursive: true }));
+
+  const first = orderWorker(
+    databasePath,
+    "00000000-0000-4000-8000-000000000047",
+    "reservation-1",
+  );
+  const second = orderWorker(
+    databasePath,
+    "00000000-0000-4000-8000-000000000048",
+    "reservation-2",
+    "org_buyer_2",
+    "buyer-2-agent@test",
+  );
+  await Promise.all([once(first, "message"), once(second, "message")]);
+  const results = Promise.all([once(first, "message"), once(second, "message")]);
+  first.postMessage("create");
+  second.postMessage("create");
+  const messages = (await results).map(([message]) =>
+    message as { error?: string; status?: string }
+  );
+  assert.deepEqual(messages.map(({ error }) => error), [undefined, undefined]);
+  assert.deepEqual(messages.map(({ status }) => status).sort(), [
+    "denied",
+    "payment_pending",
+  ]);
+  const verify = initializeDatabase(databasePath);
+  assert.equal((await verify.get(`
+    SELECT COALESCE(SUM(quantity), 0) AS quantity FROM offer_reservations
+    WHERE status = 'reserved'
+  `))?.quantity, 10);
+  verify.close();
 });
 
 test("inactive budget windows deny before offer selection", async () => {

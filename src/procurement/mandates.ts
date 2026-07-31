@@ -7,6 +7,7 @@ import {
   withImmediateTransaction,
 } from "../db.ts";
 import { ApiError, parseRequest } from "../http.ts";
+import { releaseOfferReservation } from "./reservations.ts";
 import { POLICY_CAPS } from "./policy.ts";
 
 const identifier = z.string().trim().min(1).max(128);
@@ -152,6 +153,7 @@ export async function createMandate(
       RETURNING id
     `, createdAt, buyerOrganizationId);
     for (const order of staleOrders) {
+      await releaseOfferReservation(transaction, String(order.id), createdAt);
       await transaction.run(`
         INSERT INTO audit_events (
           aggregate_type, aggregate_id, organization_id, event_type, actor_type,

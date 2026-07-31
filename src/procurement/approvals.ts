@@ -6,6 +6,7 @@ import {
   withImmediateTransaction,
 } from "../db.ts";
 import { ApiError, parseRequest } from "../http.ts";
+import { releaseOfferReservation } from "./reservations.ts";
 import { mandatePolicySchema } from "./mandates.ts";
 
 const identifier = z.string().trim().min(1).max(128);
@@ -367,7 +368,6 @@ async function offerStillApplies(
     && row.valid_from <= now
     && typeof row.valid_until === "string"
     && row.valid_until > now
-    && Number(row.advisory_quantity) >= order.quantity
     && Number(row.version) === order.catalogItemVersion
     && row.sku === order.sku
     && row.product_key === order.productKey
@@ -394,6 +394,7 @@ async function transitionWithoutDecision(
   if (updated.changes !== 1) {
     throw new Error("Approval transition lost its compare-and-set");
   }
+  await releaseOfferReservation(database, order.id, now);
   await audit(
     database,
     actor,
@@ -431,6 +432,9 @@ async function decide(
   );
   if (updated.changes !== 1) {
     throw new Error("Approval transition lost its compare-and-set");
+  }
+  if (status === "rejected") {
+    await releaseOfferReservation(database, order.id, now);
   }
   await audit(
     database,

@@ -234,22 +234,26 @@ Mandate:
 4. selects the lowest total, breaking ties by supplier ID.
 
 Multi-line orders, split orders, unit conversion, and semantic/AI matching are
-deferred. Published stock is advisory. The demo assumes every seeded supplier
-serves every seeded delivery location allowed by the buyer's mandate. Mandate
-validates the offer during automatic order creation and validates it again
-after any human-approval wait, before changing the order to `payment_pending`.
-A changed or expired waiting offer makes the order `stale`, releases its
-budget, and requires a new request. An approved order is never rewritten in
-place.
+deferred. A published offer is standing supplier acceptance: Mandate reserves
+its available quantity atomically when it creates an eligible order, without a
+supplier acceptance step. The demo assumes every seeded supplier serves every
+seeded delivery location allowed by the buyer's mandate. Mandate validates the
+frozen offer again after any human-approval wait. A changed or expired waiting
+offer makes the order `stale`, releases its inventory and budget reservations,
+and requires a new request. An approved order is never rewritten in place.
 
 ### Data model
 
 | Table | Essential data and constraints |
 |---|---|
 | `organizations` | Internal ID, unique Auth0 `org_id`, name, buyer/supplier kind, optional Stripe Customer ID |
+| `supplier_payment_accounts` | Supplier organization, unique Stripe connected account ID, onboarding/requirements/recipient-transfer state, payout readiness, last Stripe event time |
 | `catalog_items` | Supplier organization, immutable registered SKU/product key/category/unit, mutable integer unit price/currency/advisory quantity/validity/display text/active flag, version; unique supplier + SKU |
+| `offer_reservations` | One idempotent order reservation against an exact catalog item version and quantity; reserved/released/settled state |
 | `mandates` | Buyer organization, version, active/superseded/revoked state, validity, structured policy JSON, schema version, policy hash, creator; unique buyer + version and at most one active per buyer |
 | `orders` | Buyer/supplier organizations, requester subject, mandate version/hash, catalog item/version, immutable SKU/product/category/unit/unit-price snapshot, quantity, currency, total, delivery location, status, policy decision/reasons, idempotency key/request hash, approval expiry/actor/time/reason, Stripe create-started timestamp, timestamps, optional unique Stripe PaymentIntent ID; unique buyer + requester + idempotency key |
+| `wallet_funding_lots` | Immutable Stripe PaymentIntent/charge source, original and available amount, currency, and availability state |
+| `wallet_funding_allocations` | Immutable order-to-funding-lot allocations retaining the Stripe source charge for later supplier transfers |
 | `stripe_events` | Unique Stripe event ID, type, object ID, received/processed timestamps |
 | `audit_events` | Aggregate, optional organization, event type, actor type/subject, request ID, sanitized payload, timestamp |
 
@@ -539,9 +543,9 @@ build, then the manual flow below.
 | Deferred capability | Add only when |
 |---|---|
 | Dedicated Redis rate limiting | Postgres limiter traffic becomes measurable database load |
-| Stripe Connect and settlement ledger | Supplier payouts and commercial/legal ownership are decided |
+| Stripe transfers and reversal ledger | Automatic supplier transfer, refund, and dispute tickets are implemented |
 | Queue/outbox | Webhook work gains slow or non-database side effects |
-| Inventory reservation protocol | Suppliers can confirm and hold stock |
+| POS/warehouse synchronization | Suppliers need live physical inventory reconciliation |
 | Multi-line baskets | A real purchase must contain more than one product |
 | Split/multi-supplier optimizer | One supplier cannot satisfy real requests |
 | Policy DSL/service | Rules outgrow the explicit mandate schema or non-engineers must author them |

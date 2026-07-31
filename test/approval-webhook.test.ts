@@ -187,6 +187,21 @@ test("same-tenant approval is one-time and payment-ready", async () => {
 });
 
 test("approval expiry and changed offers fail closed with committed states", async () => {
+  const rejected = await setup();
+  await decideApproval(
+    rejected.database,
+    approver,
+    rejected.orderId,
+    { decision: "reject", reason: "Not needed" },
+    "reject-request",
+    now,
+  );
+  assert.equal((await rejected.database.get(
+    "SELECT status FROM offer_reservations WHERE order_id = ?",
+    rejected.orderId,
+  ))?.status, "released");
+  await rejected.database.close();
+
   const expired = await setup();
   await assert.rejects(
     decideApproval(
@@ -207,6 +222,10 @@ test("approval expiry and changed offers fail closed with committed states", asy
     ))?.status,
     "expired",
   );
+  assert.equal((await expired.database.get(
+    "SELECT status FROM offer_reservations WHERE order_id = ?",
+    expired.orderId,
+  ))?.status, "released");
   await expired.database.close();
 
   const stale = await setup();
@@ -233,6 +252,10 @@ test("approval expiry and changed offers fail closed with committed states", asy
     ))?.status,
     "stale",
   );
+  assert.equal((await stale.database.get(
+    "SELECT status FROM offer_reservations WHERE order_id = ?",
+    stale.orderId,
+  ))?.status, "released");
   await stale.database.close();
 });
 

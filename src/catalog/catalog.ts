@@ -194,7 +194,12 @@ export async function findEligibleOffers(
     FROM catalog_items
     WHERE product_key = ? AND unit = ? AND active = 1
       AND valid_from <= ? AND valid_until > ?
-      AND advisory_quantity >= ? AND unit_price <= ?
+      AND advisory_quantity - COALESCE((
+        SELECT SUM(reservation.quantity) FROM offer_reservations reservation
+        WHERE reservation.catalog_item_id = catalog_items.id
+          AND reservation.catalog_item_version = catalog_items.version
+          AND reservation.status IN ('reserved', 'settled')
+      ), 0) >= ? AND unit_price <= ?
     ORDER BY unit_price, supplier_organization_id, id
   `,
     query.productKey, query.unit, timestamp, timestamp, query.quantity,

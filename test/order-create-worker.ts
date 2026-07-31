@@ -9,14 +9,16 @@ type WorkerInput = Readonly<{
   idempotencyKey: string;
   requestId: string;
   now: string;
+  organizationId?: string;
+  subject?: string;
 }>;
 
 const input = workerData as WorkerInput;
 const actor: ActorContext = Object.freeze({
-  organizationId: "org_buyer",
+  organizationId: input.organizationId ?? "org_buyer",
   actorType: "buyer_agent",
   scopes: Object.freeze(["orders:create", "orders:read"]),
-  subject: "buyer_agent@test",
+  subject: input.subject ?? "buyer_agent@test",
 });
 
 const port = parentPort;

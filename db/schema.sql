@@ -21,6 +21,32 @@ CREATE TABLE IF NOT EXISTS organizations (
     CHECK (created_at GLOB '????-??-??T??:??:??*Z')
 ) STRICT;
 
+CREATE TABLE IF NOT EXISTS supplier_payment_accounts (
+  supplier_organization_id TEXT PRIMARY KEY,
+  stripe_account_id TEXT NOT NULL UNIQUE
+    CHECK (length(stripe_account_id) BETWEEN 1 AND 128),
+  onboarding_status TEXT NOT NULL CHECK (onboarding_status IN (
+    'not_started', 'requirements_due', 'pending', 'complete', 'restricted'
+  )),
+  requirements_status TEXT NOT NULL CHECK (requirements_status IN (
+    'unknown', 'due', 'pending', 'clear'
+  )),
+  stripe_transfers_status TEXT NOT NULL CHECK (stripe_transfers_status IN (
+    'inactive', 'pending', 'active', 'restricted', 'unsupported'
+  )),
+  payout_ready INTEGER NOT NULL CHECK (payout_ready IN (0, 1)),
+  last_stripe_event_created_at TEXT CHECK (
+    last_stripe_event_created_at IS NULL
+    OR last_stripe_event_created_at GLOB '????-??-??T??:??:??*Z'
+  ),
+  created_at TEXT NOT NULL CHECK (created_at GLOB '????-??-??T??:??:??*Z'),
+  updated_at TEXT NOT NULL CHECK (
+    updated_at GLOB '????-??-??T??:??:??*Z' AND updated_at >= created_at
+  ),
+  FOREIGN KEY (supplier_organization_id)
+    REFERENCES organizations(id) ON UPDATE RESTRICT ON DELETE RESTRICT
+) STRICT;
+
 CREATE TABLE IF NOT EXISTS wallet_accounts (
   organization_id TEXT PRIMARY KEY,
   currency TEXT NOT NULL CHECK (currency GLOB '[A-Z][A-Z][A-Z]'),
@@ -48,6 +74,49 @@ CREATE TABLE IF NOT EXISTS wallet_topups (
   FOREIGN KEY (organization_id)
     REFERENCES organizations(id) ON UPDATE RESTRICT ON DELETE RESTRICT
 ) STRICT;
+
+CREATE TABLE IF NOT EXISTS wallet_funding_lots (
+  id TEXT PRIMARY KEY CHECK (length(id) = 36),
+  wallet_topup_id TEXT NOT NULL UNIQUE,
+  organization_id TEXT NOT NULL,
+  stripe_payment_intent_id TEXT NOT NULL UNIQUE
+    CHECK (length(stripe_payment_intent_id) BETWEEN 1 AND 128),
+  stripe_charge_id TEXT NOT NULL UNIQUE
+    CHECK (length(stripe_charge_id) BETWEEN 1 AND 128),
+  original_amount INTEGER NOT NULL CHECK (original_amount BETWEEN 1 AND 100000000),
+  available_amount INTEGER NOT NULL CHECK (
+    available_amount BETWEEN 0 AND original_amount
+  ),
+  currency TEXT NOT NULL CHECK (currency GLOB '[A-Z][A-Z][A-Z]'),
+  status TEXT NOT NULL CHECK (status IN (
+    'available', 'exhausted', 'refunded', 'disputed'
+  )),
+  funded_at TEXT NOT NULL CHECK (funded_at GLOB '????-??-??T??:??:??*Z'),
+  updated_at TEXT NOT NULL CHECK (
+    updated_at GLOB '????-??-??T??:??:??*Z' AND updated_at >= funded_at
+  ),
+  CHECK (
+    (status = 'available' AND available_amount > 0)
+    OR (status = 'exhausted' AND available_amount = 0)
+    OR status IN ('refunded', 'disputed')
+  ),
+  FOREIGN KEY (wallet_topup_id)
+    REFERENCES wallet_topups(id) ON UPDATE RESTRICT ON DELETE RESTRICT,
+  FOREIGN KEY (organization_id)
+    REFERENCES organizations(id) ON UPDATE RESTRICT ON DELETE RESTRICT
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS wallet_funding_lots_available
+  ON wallet_funding_lots(organization_id, currency, status, funded_at, id);
+
+CREATE TRIGGER IF NOT EXISTS wallet_funding_lots_reject_identity_update
+BEFORE UPDATE OF
+  id, wallet_topup_id, organization_id, stripe_payment_intent_id,
+  stripe_charge_id, original_amount, currency, funded_at
+ON wallet_funding_lots
+BEGIN
+  SELECT RAISE(ABORT, 'wallet funding lot identity is immutable');
+END;
 
 CREATE TABLE IF NOT EXISTS wallet_transactions (
   id INTEGER PRIMARY KEY,
@@ -343,6 +412,49 @@ CREATE TABLE IF NOT EXISTS orders (
     REFERENCES catalog_items(id, supplier_organization_id)
     ON UPDATE RESTRICT ON DELETE RESTRICT
 ) STRICT;
+
+CREATE TABLE IF NOT EXISTS offer_reservations (
+  order_id TEXT PRIMARY KEY,
+  catalog_item_id TEXT NOT NULL,
+  catalog_item_version INTEGER NOT NULL CHECK (catalog_item_version >= 1),
+  quantity INTEGER NOT NULL CHECK (quantity BETWEEN 1 AND 1000000),
+  status TEXT NOT NULL CHECK (status IN ('reserved', 'released', 'settled')),
+  created_at TEXT NOT NULL CHECK (created_at GLOB '????-??-??T??:??:??*Z'),
+  updated_at TEXT NOT NULL CHECK (
+    updated_at GLOB '????-??-??T??:??:??*Z' AND updated_at >= created_at
+  ),
+  FOREIGN KEY (order_id) REFERENCES orders(id)
+    ON UPDATE RESTRICT ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
+  FOREIGN KEY (catalog_item_id) REFERENCES catalog_items(id)
+    ON UPDATE RESTRICT ON DELETE RESTRICT
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS offer_reservations_available
+  ON offer_reservations(catalog_item_id, status);
+
+CREATE TABLE IF NOT EXISTS wallet_funding_allocations (
+  order_id TEXT NOT NULL,
+  funding_lot_id TEXT NOT NULL,
+  amount INTEGER NOT NULL CHECK (amount BETWEEN 1 AND 100000000),
+  created_at TEXT NOT NULL CHECK (created_at GLOB '????-??-??T??:??:??*Z'),
+  PRIMARY KEY (order_id, funding_lot_id),
+  FOREIGN KEY (order_id) REFERENCES orders(id)
+    ON UPDATE RESTRICT ON DELETE RESTRICT,
+  FOREIGN KEY (funding_lot_id) REFERENCES wallet_funding_lots(id)
+    ON UPDATE RESTRICT ON DELETE RESTRICT
+) STRICT;
+
+CREATE TRIGGER IF NOT EXISTS wallet_funding_allocations_reject_update
+BEFORE UPDATE ON wallet_funding_allocations
+BEGIN
+  SELECT RAISE(ABORT, 'wallet funding allocations are immutable');
+END;
+
+CREATE TRIGGER IF NOT EXISTS wallet_funding_allocations_reject_delete
+BEFORE DELETE ON wallet_funding_allocations
+BEGIN
+  SELECT RAISE(ABORT, 'wallet funding allocations are immutable');
+END;
 
 CREATE TRIGGER IF NOT EXISTS orders_reject_snapshot_update
 BEFORE UPDATE OF

@@ -6,6 +6,7 @@ import {
   withImmediateTransaction,
 } from "../db.ts";
 import { ApiError } from "../http.ts";
+import { settleOfferReservation } from "../procurement/reservations.ts";
 
 async function buyerId(database: Database, actor: ActorContext): Promise<string> {
   const row = await database.get(
@@ -120,6 +121,43 @@ export async function settleOrderFromWallet(
         "Fund the wallet before placing this order",
       );
     }
+    const lots = await tx.all(`
+      SELECT id, available_amount FROM wallet_funding_lots
+      WHERE organization_id = ? AND currency = ? AND status = 'available'
+        AND available_amount > 0
+      ORDER BY funded_at, id
+      FOR UPDATE
+    `, order.buyer_organization_id, order.currency);
+    if (
+      lots.reduce((sum, lot) => sum + Number(lot.available_amount), 0) < total
+    ) {
+      throw new ApiError(
+        409,
+        "WALLET_FUNDS_UNVERIFIED",
+        "Wallet funds are not backed by available Stripe charges",
+      );
+    }
+    let remaining = total;
+    for (const lot of lots) {
+      if (remaining === 0) break;
+      const amount = Math.min(remaining, Number(lot.available_amount));
+      const allocated = await tx.run(`
+        UPDATE wallet_funding_lots SET
+          available_amount = available_amount - ?,
+          status = CASE WHEN available_amount = ? THEN 'exhausted' ELSE 'available' END,
+          updated_at = ?
+        WHERE id = ? AND status = 'available' AND available_amount >= ?
+      `, amount, amount, createdAt, lot.id, amount);
+      if (allocated.changes !== 1) {
+        throw new Error("Wallet funding allocation lost its compare-and-set");
+      }
+      await tx.run(`
+        INSERT INTO wallet_funding_allocations (
+          order_id, funding_lot_id, amount, created_at
+        ) VALUES (?, ?, ?, ?)
+      `, orderId, lot.id, amount, createdAt);
+      remaining -= amount;
+    }
     const updated = await tx.run(`
       UPDATE wallet_accounts SET balance = balance - ?, updated_at = ?
       WHERE organization_id = ? AND balance >= ?
@@ -138,6 +176,7 @@ export async function settleOrderFromWallet(
       createdAt,
       orderId,
     );
+    await settleOfferReservation(tx, orderId, createdAt);
     await tx.run(`
       INSERT INTO audit_events (
         aggregate_type, aggregate_id, organization_id, event_type, actor_type,

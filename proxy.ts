@@ -8,8 +8,10 @@ export const config = {
   matcher: [
     "/auth/:path*",
     "/dashboard/:path*",
+    "/supplier/:path*",
     "/api/approvals/:path*",
     "/api/mandates/:path*",
     "/api/orders/:id/approval",
+    "/api/suppliers/:path*",
   ],
 };
