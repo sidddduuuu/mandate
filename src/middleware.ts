@@ -19,6 +19,10 @@ export async function middleware(request: NextRequest) {
 
 export const config = {
   matcher: [
-    "/((?!_next/static|_next/image|favicon.ico|sitemap.xml|robots.txt).*)",
+    /*
+     * Run Auth0 middleware on app routes, but skip Next internals and
+     * common static assets so error/404 prerender stays clean.
+     */
+    "/((?!_next/static|_next/image|_next/data|favicon.ico|sitemap.xml|robots.txt|images/|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico)$).*)",
   ],
 };

@@ -49,6 +49,16 @@ This repo uses the official Auth0 agent skill (`.agents/skills/auth0`) and
 
 Agent M2M stays on bearer JWTs (`AUTH0_AUDIENCE` + JWKS). Set `AUTH_TEST_MODE=1` only for local HS256 agent tokens and the test `mandate_session` cookie.
 
+### Human UI
+
+Verae-inspired product surface (warm editorial landing + approver workspace):
+
+- `/` — marketing / product page
+- `/approvals` — pending human decisions
+- `/orders` · `/orders/[id]` — history and approve/reject
+- `/mandates` — publish a mandate version
+- `/audit` — organization audit trail
+
 ### Provider checks
 
 ```bash
