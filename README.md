@@ -15,10 +15,12 @@ cp .env.example .env
 npm install
 npm run db:init
 npm run seed
+npm run seed:demo   # optional: mandate + awaiting_approval order for the UI
 npm test
 npm run typecheck
 npm run demo
-npm run dev
+# Dev on :3001 (keep APP_BASE_URL in sync)
+npm run dev -- -H 0.0.0.0 -p 3001
 ```
 
 ### API surface
@@ -43,11 +45,11 @@ This repo uses the official Auth0 agent skill (`.agents/skills/auth0`) and
 `@auth0/nextjs-auth0` v4 for human approvers:
 
 1. Configure `AUTH0_DOMAIN`, `AUTH0_CLIENT_ID`, `AUTH0_CLIENT_SECRET`, `AUTH0_SECRET`, `APP_BASE_URL`.
-2. In the Auth0 app, allow `http://localhost:3000/auth/callback` and enable Organizations.
+2. In the Auth0 app, allow `{APP_BASE_URL}/auth/callback` and enable Organizations.
 3. Open `/auth/login?organization=org_…` (home page links the seeded buyer org).
 4. Call `GET /api/session` — Mandate maps the Auth0 `org_id` + permissions into the human actor used by approvals/mandates.
 
-Agent M2M stays on bearer JWTs (`AUTH0_AUDIENCE` + JWKS). Set `AUTH_TEST_MODE=1` only for local HS256 agent tokens and the test `mandate_session` cookie.
+Agent M2M stays on bearer JWTs (`AUTH0_AUDIENCE` + JWKS). With `AUTH_TEST_MODE=1` (default in `.env.example`) or empty Auth0 client credentials, `/auth/login` sets a local `mandate_session` cookie so the UI works without a tenant. Approvals in that mode settle PaymentIntents in-process (in-memory Stripe) so orders reach `paid` without `stripe listen`.
 
 ### Human UI
 

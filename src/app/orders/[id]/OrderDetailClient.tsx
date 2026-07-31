@@ -42,7 +42,13 @@ export function OrderDetailClient({ orderId }: { orderId: string }) {
         body: { decision, reason: reason || undefined },
       });
       setOrder(updated);
-      setNotice(decision === "approve" ? "Approved — payment initiated." : "Rejected.");
+      setNotice(
+        decision === "approve"
+          ? updated.status === "paid"
+            ? "Approved and paid."
+            : "Approved — payment initiated."
+          : "Rejected.",
+      );
     } catch (err) {
       setError((err as Error).message);
     } finally {

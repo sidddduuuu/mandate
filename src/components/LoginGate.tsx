@@ -9,7 +9,7 @@ type Props = {
 export function LoginGate({
   orgHint,
   title = "Sign in to continue",
-  message = "Human approvers use Auth0 Organizations so every decision stays tenant-bound.",
+  message = "Sign in as the buyer-organization approver to manage mandates, approvals, and audit.",
 }: Props) {
   const loginHref = `/auth/login?organization=${encodeURIComponent(orgHint)}`;
   return (
@@ -19,7 +19,7 @@ export function LoginGate({
         <p>{message}</p>
         <div className="actions">
           <a className="btn btn-primary" href={loginHref}>
-            Log in to buyer organization <span className="arrow" aria-hidden>→</span>
+            Continue as approver <span className="arrow" aria-hidden>→</span>
           </a>
           <Link className="btn btn-ghost-dark" href="/">
             Back home

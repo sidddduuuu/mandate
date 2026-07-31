@@ -6,18 +6,58 @@ import {
   requireHumanPermission,
   type ActorContext,
 } from "../auth/context";
-import { createStripeAdapter, type StripeAdapter } from "../payments/stripe";
+import {
+  createMemoryStripeAdapter,
+  createStripeAdapter,
+  type StripeAdapter,
+} from "../payments/stripe";
+import { getConfig } from "./config";
 import { checkRateLimit } from "./rate-limit";
 import { AppError, getRequestId, jsonError, toErrorResponse } from "./http";
 
 let stripeOverride: StripeAdapter | null = null;
+let memoryStripe: ReturnType<typeof createMemoryStripeAdapter> | null = null;
 
 export function setStripeOverride(adapter: StripeAdapter | null): void {
   stripeOverride = adapter;
 }
 
+function hasUsableStripeKey(key: string | undefined): boolean {
+  if (!key) return false;
+  if (key.includes("...") || key.endsWith("_") || key === "sk_test_...") return false;
+  return (
+    key.startsWith("sk_test_") ||
+    key.startsWith("rk_test_") ||
+    key.startsWith("rkcs_test_") ||
+    key.includes("_test_")
+  );
+}
+
+/**
+ * Stripe adapter for HTTP routes.
+ * AUTH_TEST_MODE uses the in-memory adapter so local UI demos reach `paid`
+ * without a Stripe CLI webhook listener. Live checks call createStripeAdapter()
+ * directly. Production (AUTH_TEST_MODE off) uses the configured secret key.
+ */
 export function getStripe(): StripeAdapter {
-  return stripeOverride ?? createStripeAdapter();
+  if (stripeOverride) return stripeOverride;
+  const cfg = getConfig();
+  if (cfg.AUTH_TEST_MODE) {
+    if (!memoryStripe) memoryStripe = createMemoryStripeAdapter();
+    return memoryStripe;
+  }
+  if (hasUsableStripeKey(cfg.STRIPE_SECRET_KEY)) {
+    return createStripeAdapter();
+  }
+  if (!memoryStripe) memoryStripe = createMemoryStripeAdapter();
+  return memoryStripe;
+}
+
+export function isMemoryStripe(): boolean {
+  if (stripeOverride) return false;
+  const cfg = getConfig();
+  if (cfg.AUTH_TEST_MODE) return true;
+  return !hasUsableStripeKey(cfg.STRIPE_SECRET_KEY);
 }
 
 export async function withApi(

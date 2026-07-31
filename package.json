@@ -11,6 +11,7 @@
     "test": "node --import tsx --test test/**/*.test.ts",
     "db:init": "tsx scripts/init-db.ts",
     "seed": "tsx scripts/seed.ts",
+    "seed:demo": "tsx scripts/seed-demo-flow.ts",
     "reconcile": "tsx scripts/reconcile.ts",
     "demo": "tsx scripts/demo.ts",
     "check:stripe": "tsx scripts/live-stripe-check.ts",

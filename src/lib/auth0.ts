@@ -11,8 +11,11 @@ export function getAuth0Client(): Auth0Client | null {
   if (client !== undefined) return client;
 
   const cfg = getConfig();
+  const domain = cfg.AUTH0_DOMAIN ?? "";
+  const placeholderDomain =
+    !domain || domain.includes("your-tenant") || domain.includes("example");
   if (
-    !cfg.AUTH0_DOMAIN ||
+    placeholderDomain ||
     !cfg.AUTH0_CLIENT_ID ||
     !cfg.AUTH0_CLIENT_SECRET ||
     !cfg.AUTH0_SECRET
