@@ -199,6 +199,10 @@ describe("order flow", () => {
     const first = await createOrder(fx.db, fx.buyerAgent, body, key, "idemp-1", fx.stripe);
     const second = await createOrder(fx.db, fx.buyerAgent, body, key, "idemp-2", fx.stripe);
     assert.equal(first.order.id, second.order.id);
+    assert.equal(first.order.status, "payment_pending");
+    assert.equal(fx.stripe.intents.size, 1);
+    assert.equal(fx.stripe.createAttempts.length, 1);
+    assert.equal(fx.stripe.confirmAttempts.length, 1);
 
     await assert.rejects(
       () =>
@@ -219,7 +223,7 @@ describe("order flow", () => {
     const body = {
       product_key: "avocado",
       unit: "case",
-      quantity: 2,
+      quantity: 1,
       delivery_location_id: "kitchen-1",
     };
     const [first, second] = await Promise.all([
@@ -242,6 +246,265 @@ describe("order flow", () => {
           .get(first.order.id) as { n: number }
       ).n,
       1,
+    );
+    assert.equal(fx.stripe.intents.size, 1);
+    assert.equal(fx.stripe.createAttempts.length, 1);
+    assert.equal(fx.stripe.confirmAttempts.length, 1);
+  });
+
+  it("retries unknown Stripe operations with the same deterministic keys", async () => {
+    const body = {
+      product_key: "avocado",
+      unit: "case",
+      quantity: 1,
+      delivery_location_id: "kitchen-1",
+    };
+
+    fx.stripe.failNextCreate = true;
+    const createKey = randomUUID();
+    const unknownCreate = await createOrder(
+      fx.db,
+      fx.buyerAgent,
+      body,
+      createKey,
+      "unknown-create-1",
+      fx.stripe,
+    );
+    assert.equal(unknownCreate.order.status, "payment_pending");
+    assert.equal(unknownCreate.order.stripe_payment_intent_id, null);
+    const recoveredCreate = await createOrder(
+      fx.db,
+      fx.buyerAgent,
+      body,
+      createKey,
+      "unknown-create-2",
+      fx.stripe,
+    );
+    assert.ok(recoveredCreate.order.stripe_payment_intent_id);
+    assert.deepEqual(fx.stripe.createAttempts.slice(0, 2), [
+      `order:${recoveredCreate.order.id}:create`,
+      `order:${recoveredCreate.order.id}:create`,
+    ]);
+    assert.equal(fx.stripe.intents.size, 1);
+
+    fx.stripe.failNextConfirm = true;
+    const confirmKey = randomUUID();
+    const unknownConfirm = await createOrder(
+      fx.db,
+      fx.buyerAgent,
+      body,
+      confirmKey,
+      "unknown-confirm-1",
+      fx.stripe,
+    );
+    assert.equal(unknownConfirm.order.status, "payment_pending");
+    assert.equal(unknownConfirm.order.stripe_confirm_completed_at, null);
+    const recoveredConfirm = await createOrder(
+      fx.db,
+      fx.buyerAgent,
+      body,
+      confirmKey,
+      "unknown-confirm-2",
+      fx.stripe,
+    );
+    assert.ok(recoveredConfirm.order.stripe_confirm_completed_at);
+    assert.deepEqual(fx.stripe.confirmAttempts.slice(-2), [
+      `order:${recoveredConfirm.order.id}:confirm`,
+      `order:${recoveredConfirm.order.id}:confirm`,
+    ]);
+  });
+
+  it("stops fresh create retries at 23 hours and requests reconciliation", async () => {
+    fx.stripe.failNextCreate = true;
+    const key = randomUUID();
+    const body = {
+      product_key: "avocado",
+      unit: "case",
+      quantity: 1,
+      delivery_location_id: "kitchen-1",
+    };
+    const first = await createOrder(
+      fx.db,
+      fx.buyerAgent,
+      body,
+      key,
+      "cutoff-1",
+      fx.stripe,
+    );
+    fx.db
+      .prepare(
+        `UPDATE orders
+         SET stripe_create_started_at = ?, stripe_create_lease_until = NULL
+         WHERE id = ?`,
+      )
+      .run(new Date(Date.now() - 24 * 60 * 60_000).toISOString(), first.order.id);
+    const replay = await createOrder(
+      fx.db,
+      fx.buyerAgent,
+      body,
+      key,
+      "cutoff-2",
+      fx.stripe,
+    );
+    assert.equal(replay.order.stripe_payment_intent_id, null);
+    assert.equal(fx.stripe.createAttempts.length, 1);
+    assert.equal(
+      (
+        fx.db
+          .prepare(
+            `SELECT COUNT(*) AS n FROM audit_events
+             WHERE aggregate_id = ?
+               AND event_type = 'stripe.create_reconciliation_required'`,
+          )
+          .get(first.order.id) as { n: number }
+      ).n,
+      1,
+    );
+  });
+
+  it("recovers a database failure after Stripe create without a second PaymentIntent", async () => {
+    fx.db.exec(
+      `CREATE TRIGGER reject_payment_intent_persist
+       BEFORE UPDATE OF stripe_payment_intent_id ON orders
+       WHEN NEW.stripe_payment_intent_id IS NOT NULL
+       BEGIN
+         SELECT RAISE(ABORT, 'injected payment persistence failure');
+       END`,
+    );
+    const key = randomUUID();
+    const body = {
+      product_key: "avocado",
+      unit: "case",
+      quantity: 1,
+      delivery_location_id: "kitchen-1",
+    };
+    await assert.rejects(
+      () =>
+        createOrder(
+          fx.db,
+          fx.buyerAgent,
+          body,
+          key,
+          "persist-1",
+          fx.stripe,
+        ),
+      /injected payment persistence failure/,
+    );
+    assert.equal(fx.stripe.intents.size, 1);
+    const order = fx.db
+      .prepare(`SELECT * FROM orders WHERE idempotency_key = ?`)
+      .get(key) as { id: string; stripe_payment_intent_id: string | null };
+    assert.equal(order.stripe_payment_intent_id, null);
+
+    fx.db.exec(`DROP TRIGGER reject_payment_intent_persist`);
+    fx.db
+      .prepare(`UPDATE orders SET stripe_create_lease_until = ? WHERE id = ?`)
+      .run(new Date(Date.now() - 1000).toISOString(), order.id);
+    const recovered = await createOrder(
+      fx.db,
+      fx.buyerAgent,
+      body,
+      key,
+      "persist-2",
+      fx.stripe,
+    );
+    assert.ok(recovered.order.stripe_payment_intent_id);
+    assert.equal(fx.stripe.intents.size, 1);
+    assert.deepEqual(fx.stripe.createAttempts, [
+      `order:${order.id}:create`,
+      `order:${order.id}:create`,
+    ]);
+  });
+
+  it("rejects mismatched Stripe evidence and keeps the reservation conservative", async () => {
+    const stripe = {
+      ...fx.stripe,
+      createPaymentIntent: async (
+        input: Parameters<typeof fx.stripe.createPaymentIntent>[0],
+      ) => {
+        const intent = await fx.stripe.createPaymentIntent(input);
+        return { ...intent, amount: intent.amount + 1 };
+      },
+    };
+    const key = randomUUID();
+    await assert.rejects(
+      () =>
+        createOrder(
+          fx.db,
+          fx.buyerAgent,
+          {
+            product_key: "avocado",
+            unit: "case",
+            quantity: 1,
+            delivery_location_id: "kitchen-1",
+          },
+          key,
+          "mismatch-1",
+          stripe,
+        ),
+      (error: unknown) =>
+        error instanceof AppError && error.code === "stripe_evidence_mismatch",
+    );
+    const row = fx.db
+      .prepare(
+        `SELECT o.stripe_payment_intent_id, r.status
+         FROM orders o
+         JOIN budget_reservations r ON r.order_id = o.id
+         WHERE o.idempotency_key = ?`,
+      )
+      .get(key) as {
+      stripe_payment_intent_id: string | null;
+      status: string;
+    };
+    assert.equal(row.stripe_payment_intent_id, null);
+    assert.equal(row.status, "held");
+  });
+
+  it("makes definitive payment failure terminal while retaining budget", async () => {
+    let confirmCalls = 0;
+    const stripe = {
+      ...fx.stripe,
+      confirmPaymentIntent: async (
+        input: Parameters<typeof fx.stripe.confirmPaymentIntent>[0],
+      ) => {
+        confirmCalls += 1;
+        const intent = await fx.stripe.confirmPaymentIntent(input);
+        return { ...intent, status: "requires_payment_method" };
+      },
+    };
+    const key = randomUUID();
+    const body = {
+      product_key: "avocado",
+      unit: "case",
+      quantity: 1,
+      delivery_location_id: "kitchen-1",
+    };
+    const failed = await createOrder(
+      fx.db,
+      fx.buyerAgent,
+      body,
+      key,
+      "definitive-1",
+      stripe,
+    );
+    assert.equal(failed.order.status, "payment_failed");
+    const replay = await createOrder(
+      fx.db,
+      fx.buyerAgent,
+      body,
+      key,
+      "definitive-2",
+      stripe,
+    );
+    assert.equal(replay.order.status, "payment_failed");
+    assert.equal(confirmCalls, 1);
+    assert.equal(
+      (
+        fx.db
+          .prepare(`SELECT status FROM budget_reservations WHERE order_id = ?`)
+          .get(failed.order.id) as { status: string }
+      ).status,
+      "held",
     );
   });
 

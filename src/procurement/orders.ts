@@ -9,7 +9,7 @@ import { sha256Hex, stableStringify } from "../lib/hash";
 import { AppError } from "../lib/http";
 import { newId, nowIso } from "../lib/ids";
 import { computeOrderTotalMinor, MoneyError } from "../lib/money";
-import type { StripeAdapter } from "../payments/stripe";
+import type { PaymentIntentState, StripeAdapter } from "../payments/stripe";
 import { getActiveMandate, mandateToPolicy, type MandateRow } from "./mandates";
 import { evaluatePolicy } from "./policy";
 
@@ -57,6 +57,10 @@ export type OrderRow = {
   approval_reason: string | null;
   stripe_payment_intent_id: string | null;
   stripe_create_started_at: string | null;
+  stripe_create_lease_until: string | null;
+  stripe_confirm_started_at: string | null;
+  stripe_confirm_lease_until: string | null;
+  stripe_confirm_completed_at: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -79,7 +83,7 @@ const ALLOWED_TRANSITIONS: Record<OrderStatus, OrderStatus[]> = {
   expired: [],
   stale: [],
   payment_pending: ["paid", "payment_failed", "cancelled"],
-  payment_failed: ["payment_pending", "paid", "cancelled"],
+  payment_failed: ["paid", "cancelled"],
   paid: [],
   cancelled: [],
 };
@@ -612,8 +616,8 @@ export async function createOrder(
   if (outcome.kind === "error") throw outcome.error;
   const order = outcome.order;
   if (outcome.kind === "existing") {
-    if (order.status === "payment_pending" || order.status === "payment_failed") {
-      await resumePayment(db, order, requestId, stripe);
+    if (order.status === "payment_pending") {
+      await initiatePayment(db, order, requestId, stripe);
       return { order: getOrder(db, order.id)!, httpStatus: 200 };
     }
     return {
@@ -632,6 +636,39 @@ export async function createOrder(
   return { order: getOrder(db, order.id)!, httpStatus: 201 };
 }
 
+const STRIPE_OPERATION_LEASE_MS = 30_000;
+const STRIPE_CREATE_RETRY_CUTOFF_MS = 23 * 60 * 60_000;
+
+function assertStripeIntentMatchesOrder(
+  order: OrderRow,
+  intent: PaymentIntentState,
+  requireUnconfirmed = false,
+): void {
+  const unconfirmed = new Set(["requires_confirmation", "requires_payment_method"]);
+  if (
+    intent.amount !== order.total_minor ||
+    intent.currency !== order.currency.toLowerCase() ||
+    intent.livemode ||
+    intent.metadata.order_id !== order.id ||
+    (requireUnconfirmed && !unconfirmed.has(intent.status))
+  ) {
+    throw new AppError(
+      502,
+      "stripe_evidence_mismatch",
+      "Stripe payment evidence does not match the order",
+    );
+  }
+}
+
+function safeStripeErrorCode(error: unknown): string {
+  if (error instanceof AppError) return error.code;
+  if (error && typeof error === "object" && "code" in error) {
+    const code = String((error as { code: unknown }).code);
+    if (/^[A-Za-z0-9_.:-]{1,100}$/.test(code)) return code;
+  }
+  return "unknown_provider_outcome";
+}
+
 async function initiatePayment(
   db: Db,
   order: OrderRow,
@@ -639,106 +676,321 @@ async function initiatePayment(
   stripe: StripeAdapter,
 ): Promise<void> {
   const cfg = getConfig();
-  const now = nowIso();
-
-  if (!order.stripe_create_started_at) {
-    db.prepare(`UPDATE orders SET stripe_create_started_at = ?, updated_at = ? WHERE id = ?`).run(
+  const createAcquired = withImmediateTransaction(db, () => {
+    const current = getOrder(db, order.id);
+    if (!current || current.status !== "payment_pending" || current.stripe_payment_intent_id) {
+      return false;
+    }
+    const now = nowIso();
+    if (
+      current.stripe_create_started_at &&
+      Date.parse(now) - Date.parse(current.stripe_create_started_at) >=
+        STRIPE_CREATE_RETRY_CUTOFF_MS
+    ) {
+      writeAudit(db, {
+        aggregateType: "order",
+        aggregateId: current.id,
+        organizationId: current.buyer_org_id,
+        eventType: "stripe.create_reconciliation_required",
+        actorType: "system",
+        requestId,
+        payload: { operation: "create", cutoff_hours: 23 },
+      });
+      return false;
+    }
+    if (
+      current.stripe_create_lease_until &&
+      Date.parse(current.stripe_create_lease_until) > Date.parse(now)
+    ) {
+      return false;
+    }
+    db.prepare(
+      `UPDATE orders
+       SET stripe_create_started_at = COALESCE(stripe_create_started_at, ?),
+           stripe_create_lease_until = ?,
+           updated_at = ?
+       WHERE id = ?`,
+    ).run(
       now,
+      new Date(Date.parse(now) + STRIPE_OPERATION_LEASE_MS).toISOString(),
       now,
-      order.id,
+      current.id,
     );
-  }
+    writeAudit(db, {
+      aggregateType: "order",
+      aggregateId: current.id,
+      organizationId: current.buyer_org_id,
+      eventType: "stripe.create_requested",
+      actorType: "system",
+      requestId,
+      payload: {
+        amount_minor: current.total_minor,
+        currency: current.currency,
+        mode: "test",
+        operation_key: `order:${current.id}:create`,
+      },
+    });
+    return true;
+  });
 
-  let paymentIntentId = order.stripe_payment_intent_id;
-  if (!paymentIntentId) {
+  if (createAcquired) {
     const org = db
       .prepare(`SELECT stripe_customer_id FROM organizations WHERE id = ?`)
       .get(order.buyer_org_id) as { stripe_customer_id: string | null };
-    const pi = await stripe.createPaymentIntent({
-      orderId: order.id,
-      amountMinor: order.total_minor,
-      currency: order.currency,
-      customerId: org.stripe_customer_id,
-      idempotencyKey: `order:${order.id}:create`,
-    });
-    paymentIntentId = pi.id;
-    db.prepare(
-      `UPDATE orders SET stripe_payment_intent_id = ?, updated_at = ? WHERE id = ? AND stripe_payment_intent_id IS NULL`,
-    ).run(paymentIntentId, nowIso(), order.id);
-    writeAudit(db, {
-      aggregateType: "order",
-      aggregateId: order.id,
-      organizationId: order.buyer_org_id,
-      eventType: "order.stripe_create",
-      actorType: "system",
-      requestId,
-      payload: { payment_intent_id: paymentIntentId },
+    let created: PaymentIntentState;
+    try {
+      created = await stripe.createPaymentIntent({
+        orderId: order.id,
+        amountMinor: order.total_minor,
+        currency: order.currency,
+        customerId: org.stripe_customer_id,
+        idempotencyKey: `order:${order.id}:create`,
+      });
+    } catch (error) {
+      withImmediateTransaction(db, () => {
+        db.prepare(
+          `UPDATE orders
+           SET stripe_create_lease_until = NULL, updated_at = ?
+           WHERE id = ?`,
+        ).run(nowIso(), order.id);
+        writeAudit(db, {
+          aggregateType: "order",
+          aggregateId: order.id,
+          organizationId: order.buyer_org_id,
+          eventType: "stripe.create_unknown",
+          actorType: "system",
+          requestId,
+          payload: { error_code: safeStripeErrorCode(error) },
+        });
+      });
+      return;
+    }
+
+    try {
+      assertStripeIntentMatchesOrder(order, created, true);
+    } catch (error) {
+      withImmediateTransaction(db, () => {
+        db.prepare(
+          `UPDATE orders
+           SET stripe_create_lease_until = NULL, updated_at = ?
+           WHERE id = ?`,
+        ).run(nowIso(), order.id);
+        writeAudit(db, {
+          aggregateType: "order",
+          aggregateId: order.id,
+          organizationId: order.buyer_org_id,
+          eventType: "stripe.evidence_rejected",
+          actorType: "system",
+          requestId,
+          payload: {
+            operation: "create",
+            error_code: safeStripeErrorCode(error),
+            payment_intent_id: created.id,
+          },
+        });
+      });
+      throw error;
+    }
+
+    withImmediateTransaction(db, () => {
+      const current = getOrder(db, order.id);
+      if (!current || current.status !== "payment_pending") return;
+      if (
+        current.stripe_payment_intent_id &&
+        current.stripe_payment_intent_id !== created.id
+      ) {
+        throw new AppError(
+          409,
+          "stripe_payment_conflict",
+          "Order already references another PaymentIntent",
+        );
+      }
+      db.prepare(
+        `UPDATE orders
+         SET stripe_payment_intent_id = ?,
+             stripe_create_lease_until = NULL,
+             updated_at = ?
+         WHERE id = ?`,
+      ).run(created.id, nowIso(), order.id);
+      writeAudit(db, {
+        aggregateType: "order",
+        aggregateId: order.id,
+        organizationId: order.buyer_org_id,
+        eventType: "stripe.create_response",
+        actorType: "system",
+        requestId,
+        payload: {
+          payment_intent_id: created.id,
+          stripe_status: created.status,
+          amount_minor: created.amount,
+          currency: created.currency,
+          mode: "test",
+        },
+      });
     });
   }
 
+  const current = getOrder(db, order.id);
+  if (
+    !current ||
+    current.status !== "payment_pending" ||
+    !current.stripe_payment_intent_id ||
+    current.stripe_confirm_completed_at
+  ) {
+    return;
+  }
+
+  const confirmAcquired = withImmediateTransaction(db, () => {
+    const fresh = getOrder(db, order.id);
+    if (
+      !fresh ||
+      fresh.status !== "payment_pending" ||
+      !fresh.stripe_payment_intent_id ||
+      fresh.stripe_confirm_completed_at
+    ) {
+      return false;
+    }
+    const now = nowIso();
+    if (
+      fresh.stripe_confirm_lease_until &&
+      Date.parse(fresh.stripe_confirm_lease_until) > Date.parse(now)
+    ) {
+      return false;
+    }
+    db.prepare(
+      `UPDATE orders
+       SET stripe_confirm_started_at = COALESCE(stripe_confirm_started_at, ?),
+           stripe_confirm_lease_until = ?,
+           updated_at = ?
+       WHERE id = ?`,
+    ).run(
+      now,
+      new Date(Date.parse(now) + STRIPE_OPERATION_LEASE_MS).toISOString(),
+      now,
+      fresh.id,
+    );
+    writeAudit(db, {
+      aggregateType: "order",
+      aggregateId: fresh.id,
+      organizationId: fresh.buyer_org_id,
+      eventType: "stripe.confirm_requested",
+      actorType: "system",
+      requestId,
+      payload: {
+        payment_intent_id: fresh.stripe_payment_intent_id,
+        operation_key: `order:${fresh.id}:confirm`,
+      },
+    });
+    return true;
+  });
+  if (!confirmAcquired) return;
+
+  const paymentIntentId = current.stripe_payment_intent_id;
+  let confirmed: PaymentIntentState;
   try {
-    const confirmed = await stripe.confirmPaymentIntent({
+    confirmed = await stripe.confirmPaymentIntent({
       paymentIntentId,
       paymentMethod: cfg.STRIPE_DEFAULT_PAYMENT_METHOD,
       idempotencyKey: `order:${order.id}:confirm`,
     });
+  } catch (error) {
+    withImmediateTransaction(db, () => {
+      db.prepare(
+        `UPDATE orders
+         SET stripe_confirm_lease_until = NULL, updated_at = ?
+         WHERE id = ?`,
+      ).run(nowIso(), order.id);
+      writeAudit(db, {
+        aggregateType: "order",
+        aggregateId: order.id,
+        organizationId: order.buyer_org_id,
+        eventType: "stripe.confirm_unknown",
+        actorType: "system",
+        requestId,
+        payload: {
+          payment_intent_id: paymentIntentId,
+          error_code: safeStripeErrorCode(error),
+        },
+      });
+    });
+    return;
+  }
+
+  try {
+    assertStripeIntentMatchesOrder(order, confirmed);
+  } catch (error) {
+    withImmediateTransaction(db, () => {
+      db.prepare(
+        `UPDATE orders
+         SET stripe_confirm_lease_until = NULL, updated_at = ?
+         WHERE id = ?`,
+      ).run(nowIso(), order.id);
+      writeAudit(db, {
+        aggregateType: "order",
+        aggregateId: order.id,
+        organizationId: order.buyer_org_id,
+        eventType: "stripe.evidence_rejected",
+        actorType: "system",
+        requestId,
+        payload: {
+          operation: "confirm",
+          error_code: safeStripeErrorCode(error),
+          payment_intent_id: confirmed.id,
+        },
+      });
+    });
+    throw error;
+  }
+
+  withImmediateTransaction(db, () => {
+    const fresh = getOrder(db, order.id);
+    if (!fresh || fresh.stripe_payment_intent_id !== confirmed.id) {
+      throw new AppError(
+        409,
+        "stripe_payment_conflict",
+        "Stripe evidence references another PaymentIntent",
+      );
+    }
+    const now = nowIso();
+    db.prepare(
+      `UPDATE orders
+       SET stripe_confirm_completed_at = ?,
+           stripe_confirm_lease_until = NULL,
+           updated_at = ?
+       WHERE id = ?`,
+    ).run(now, now, order.id);
     writeAudit(db, {
       aggregateType: "order",
       aggregateId: order.id,
       organizationId: order.buyer_org_id,
-      eventType: "order.stripe_confirm",
+      eventType: "stripe.confirm_response",
       actorType: "system",
       requestId,
-      payload: { payment_intent_id: paymentIntentId, stripe_status: confirmed.status },
+      payload: {
+        payment_intent_id: confirmed.id,
+        stripe_status: confirmed.status,
+        amount_minor: confirmed.amount,
+        currency: confirmed.currency,
+        mode: "test",
+      },
     });
-    if (confirmed.status === "requires_payment_method" || confirmed.status === "canceled") {
-      withImmediateTransaction(db, () => {
-        transitionOrder(db, order.id, ["payment_pending"], "payment_failed");
-        writeAudit(db, {
-          aggregateType: "order",
-          aggregateId: order.id,
-          organizationId: order.buyer_org_id,
-          eventType: "order.transition",
-          actorType: "system",
-          requestId,
-          payload: { to: "payment_failed" },
-        });
+    if (
+      fresh.status === "payment_pending" &&
+      (confirmed.status === "requires_payment_method" ||
+        confirmed.status === "canceled")
+    ) {
+      transitionOrder(db, order.id, ["payment_pending"], "payment_failed");
+      writeAudit(db, {
+        aggregateType: "order",
+        aggregateId: order.id,
+        organizationId: order.buyer_org_id,
+        eventType: "order.transition",
+        actorType: "system",
+        requestId,
+        payload: { to: "payment_failed", reason: "definitive_stripe_failure" },
       });
     }
-  } catch {
-    withImmediateTransaction(db, () => {
-      const current = getOrder(db, order.id);
-      if (current?.status === "payment_pending") {
-        transitionOrder(db, order.id, ["payment_pending"], "payment_failed");
-        writeAudit(db, {
-          aggregateType: "order",
-          aggregateId: order.id,
-          organizationId: order.buyer_org_id,
-          eventType: "order.transition",
-          actorType: "system",
-          requestId,
-          payload: { to: "payment_failed", reason: "confirm_error" },
-        });
-      }
-    });
-  }
-}
-
-async function resumePayment(
-  db: Db,
-  order: OrderRow,
-  requestId: string,
-  stripe: StripeAdapter,
-): Promise<void> {
-  const current = getOrder(db, order.id);
-  if (!current) return;
-  if (current.status === "payment_failed") {
-    transitionOrder(db, current.id, ["payment_failed"], "payment_pending");
-  }
-  const refreshed = getOrder(db, order.id)!;
-  if (refreshed.status === "payment_pending") {
-    await initiatePayment(db, refreshed, requestId, stripe);
-  }
+  });
 }
 
 export async function decideApproval(
@@ -918,6 +1170,9 @@ export function serializeOrder(order: OrderRow, projection: "buyer" | "supplier"
     approval_actor_subject: order.approval_actor_subject,
     approval_decided_at: order.approval_decided_at,
     stripe_payment_intent_id: order.stripe_payment_intent_id,
+    stripe_create_started_at: order.stripe_create_started_at,
+    stripe_confirm_started_at: order.stripe_confirm_started_at,
+    stripe_confirm_completed_at: order.stripe_confirm_completed_at,
     created_at: order.created_at,
     updated_at: order.updated_at,
   };

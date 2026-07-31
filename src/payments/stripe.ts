@@ -7,6 +7,7 @@ export type PaymentIntentState = {
   status: string;
   amount: number;
   currency: string;
+  livemode: boolean;
   metadata: Record<string, string>;
 };
 
@@ -34,6 +35,7 @@ function mapIntent(pi: Stripe.PaymentIntent): PaymentIntentState {
     status: pi.status,
     amount: pi.amount,
     currency: pi.currency,
+    livemode: pi.livemode,
     metadata: Object.fromEntries(
       Object.entries(pi.metadata ?? {}).filter((e): e is [string, string] => typeof e[1] === "string"),
     ),
@@ -99,6 +101,9 @@ export function createMemoryStripeAdapter(): StripeAdapter & {
   intents: Map<string, PaymentIntentState & { canceled?: boolean }>;
   events: Stripe.Event[];
   failNextCreate?: boolean;
+  failNextConfirm?: boolean;
+  createAttempts: string[];
+  confirmAttempts: string[];
 } {
   const intents = new Map<string, PaymentIntentState & { canceled?: boolean }>();
   const createKeys = new Map<string, string>();
@@ -107,10 +112,16 @@ export function createMemoryStripeAdapter(): StripeAdapter & {
     intents: Map<string, PaymentIntentState & { canceled?: boolean }>;
     events: Stripe.Event[];
     failNextCreate?: boolean;
+    failNextConfirm?: boolean;
+    createAttempts: string[];
+    confirmAttempts: string[];
   } = {
     intents,
     events: [],
+    createAttempts: [],
+    confirmAttempts: [],
     async createPaymentIntent(input) {
+      api.createAttempts.push(input.idempotencyKey);
       if (api.failNextCreate) {
         api.failNextCreate = false;
         throw new Error("stripe_create_failed");
@@ -123,6 +134,7 @@ export function createMemoryStripeAdapter(): StripeAdapter & {
         status: "requires_confirmation",
         amount: input.amountMinor,
         currency: input.currency.toLowerCase(),
+        livemode: false,
         metadata: { order_id: input.orderId },
       };
       intents.set(id, state);
@@ -130,6 +142,11 @@ export function createMemoryStripeAdapter(): StripeAdapter & {
       return state;
     },
     async confirmPaymentIntent(input) {
+      api.confirmAttempts.push(input.idempotencyKey);
+      if (api.failNextConfirm) {
+        api.failNextConfirm = false;
+        throw new Error("stripe_confirm_unknown");
+      }
       const pi = intents.get(input.paymentIntentId);
       if (!pi) throw new Error("not_found");
       if (pi.canceled) {

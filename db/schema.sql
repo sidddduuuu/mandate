@@ -108,6 +108,10 @@ CREATE TABLE IF NOT EXISTS orders (
   approval_reason TEXT,
   stripe_payment_intent_id TEXT UNIQUE,
   stripe_create_started_at TEXT,
+  stripe_create_lease_until TEXT,
+  stripe_confirm_started_at TEXT,
+  stripe_confirm_lease_until TEXT,
+  stripe_confirm_completed_at TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   UNIQUE (buyer_org_id, requester_subject, idempotency_key)

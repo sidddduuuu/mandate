@@ -51,6 +51,10 @@ export function migrate(db: Db = getDb()): void {
       ["budget_window_start", "TEXT"],
       ["budget_window_end", "TEXT"],
       ["budget_limit_minor", "INTEGER"],
+      ["stripe_create_lease_until", "TEXT"],
+      ["stripe_confirm_started_at", "TEXT"],
+      ["stripe_confirm_lease_until", "TEXT"],
+      ["stripe_confirm_completed_at", "TEXT"],
     ] as const) {
       if (!columns.has(name)) db.exec(`ALTER TABLE orders ADD COLUMN ${name} ${type}`);
     }
