@@ -216,11 +216,15 @@ export async function actorFromAuth0Session(
       // ignore
     }
   }
+  // Demo / apps that cannot pass organization= yet: map to seeded buyer org.
+  if (!auth0OrgId) {
+    auth0OrgId = process.env.SEED_BUYER_AUTH0_ORG_ID?.trim() || "";
+  }
   if (!auth0OrgId) {
     throw new AppError(
       403,
       "missing_organization",
-      "Auth0 session has no organization; login with ?organization=org_…",
+      "Auth0 session has no organization; set SEED_BUYER_AUTH0_ORG_ID or enable Organization Usage on the Auth0 app and login with ?organization=org_…",
     );
   }
 

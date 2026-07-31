@@ -27,11 +27,15 @@ export async function GET(request: Request): Promise<Response> {
 
   const auth0 = getAuth0Client();
   if (auth0 && isAuth0Configured() && !getConfig().AUTH_TEST_MODE) {
+    // Only pass organization when the Auth0 Application allows it
+    // (Settings → Organizations → Organization Usage ≠ Deny).
+    // Otherwise Universal Login fails with "organization is not allowed".
+    const passOrganization = process.env.AUTH0_PASS_ORGANIZATION === "1";
     return auth0.startInteractiveLogin({
       returnTo: returnTo.startsWith("/") ? returnTo : "/approvals",
-      authorizationParameters: {
-        organization: orgHint,
-      },
+      authorizationParameters: passOrganization
+        ? { organization: orgHint }
+        : undefined,
     });
   }
 
