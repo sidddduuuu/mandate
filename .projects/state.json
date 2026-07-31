@@ -1,5 +1,20 @@
 {
   "version": 1,
-  "providers": {},
-  "resources": {}
+  "providers": {
+    "auth0": {
+      "name": "Auth0"
+    }
+  },
+  "resources": {
+    "auth0-plan": {
+      "name": "auth0-plan",
+      "providerName": "Auth0",
+      "serviceId": "free"
+    },
+    "mandate": {
+      "name": "mandate",
+      "providerName": "Auth0",
+      "serviceId": "client"
+    }
+  }
 }
