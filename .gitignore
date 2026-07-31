@@ -43,3 +43,6 @@ next-env.d.ts
 *.db
 *.db-*
 /data/
+
+# Stripe Projects local state
+.projects/
