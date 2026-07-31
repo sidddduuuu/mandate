@@ -1,4 +1,5 @@
 import { Auth0Client } from "@auth0/nextjs-auth0/server";
+import { NextResponse } from "next/server";
 import { getConfig } from "./config";
 
 let client: Auth0Client | null | undefined;
@@ -63,9 +64,11 @@ export function getAuth0Client(): Auth0Client | null {
         const url = new URL("/auth/error", cfg.APP_BASE_URL);
         url.searchParams.set("code", code);
         url.searchParams.set("detail", detail);
-        return Response.redirect(url);
+        return NextResponse.redirect(url);
       }
-      return Response.redirect(new URL(context.returnTo || "/approvals", cfg.APP_BASE_URL));
+      return NextResponse.redirect(
+        new URL(context.returnTo || "/approvals", cfg.APP_BASE_URL),
+      );
     },
   });
   return client;
