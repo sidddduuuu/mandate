@@ -51,6 +51,22 @@ export function getAuth0Client(): Auth0Client | null {
       inactivityDuration: 24 * 60 * 60,
       absoluteDuration: 7 * 24 * 60 * 60,
     },
+    async onCallback(error, context) {
+      if (error) {
+        const cause = (error as { cause?: { code?: string; message?: string } }).cause;
+        const detail =
+          cause?.message ||
+          error.message ||
+          "An error occurred during the authorization flow.";
+        const code = cause?.code || (error as { code?: string }).code || "authorization_error";
+        console.error("auth0_callback_error", { code, detail, returnTo: context.returnTo });
+        const url = new URL("/auth/error", cfg.APP_BASE_URL);
+        url.searchParams.set("code", code);
+        url.searchParams.set("detail", detail);
+        return Response.redirect(url);
+      }
+      return Response.redirect(new URL(context.returnTo || "/approvals", cfg.APP_BASE_URL));
+    },
   });
   return client;
 }
